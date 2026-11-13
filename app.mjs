@@ -1,5 +1,6 @@
 import { readSumoComparison, sumoRequest } from "./sumo-export.mjs";
-import { baseline, world, curve, simulate, duration, step, validate, mergeEndBounds, mergeTaper, replayMarkers, scale, vehicleDimensions } from "./model.mjs";
+import { clearance } from "./sumo-network.mjs";
+import { baseline, world, curve, duration, step, validate, greenBounds, mergeEndBounds, mergeTaper, normalizeDesign, replayMarkers, scale, signalCycle, taperLengthBounds, vehicleDimensions } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
 const map = $("#map");
@@ -9,16 +10,18 @@ const storageKey = appPath.includes("/previews/")
   ? `traffic-manager.school-pickup.v1:${appPath}`
   : "traffic-manager.school-pickup.v1";
 let original;
-let originalBuiltIn;
+let originalCache;
 const history = [];
 const icons = {
   move: '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3"/>',
   curve: '<path d="M5 18C15 18 8 6 19 6"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>',
+  signal: '<rect x="6" y="2" width="12" height="20" rx="4"/><circle cx="12" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="17" r="1"/>',
   lanes: '<path d="M6 21V4m-3 3 3-3 3 3m4 14v-7q0-7 8-7m-3-3 3 3-3 3"/>',
   design: '<path d="m3 9 9-5 9 5-9 5zm0 4 9 5 9-5M3 17l9 5 9-5"/>',
   simulate: '<path d="m7 4 14 8-14 8z"/>',
   results: '<path d="M5 20v-7m7 7V4m7 16V9"/>'
 };
+const comparisonViewBox = "150 130 330 345";
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
 document.querySelectorAll("[data-tool]").forEach(button => { button.innerHTML = icon(button.dataset.tool); });
 document.querySelectorAll("[data-view]").forEach(button => { button.innerHTML = icon(button.dataset.view) + button.textContent; });
@@ -33,8 +36,6 @@ let currentRun;
 let time = 0;
 let playing = false;
 let comparing = true;
-let sumoComparison;
-let sumoSource;
 let sumoWorker;
 let sumoMessage = "";
 let highlightQueues = false;
@@ -44,7 +45,7 @@ let animationId;
 function readSave() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
-    if (validate(saved)) return { ...saved, mergeEnd: mergeTaper(saved).end, exit: Math.min(saved.exit, world.start.y - saved.node) };
+    if (validate(saved)) return normalizeDesign(saved);
   } catch { /* A missing or unreadable save opens the original corridor. */ }
   return { ...baseline };
 }
@@ -85,14 +86,15 @@ const avenue = `
   <path d="M239 -1000H291V1600H239Z" fill="#46525b"/>
   <path d="M251 -1000V1600" stroke="#dbbe81" stroke-width="1.2"/>
   <path d="M270 -1000V1600" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="9 10"/>
-  <path d="M0 153H236V179H0Z M294 153H500V179H294Z" fill="#46525b"/>
-  <path d="M0 166H228M302 166H500" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="8 8"/>
-  <path d="M252 180H289" stroke="#fff" stroke-width="2"/>
-  <path d="M252 176H289" stroke="#fff" stroke-width="4" stroke-dasharray="2 4"/>
+  <path d="M0 169H236V191H0Z M294 169H500V191H294Z" fill="#46525b"/>
+  <path d="M0 180H228M302 180H500" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="8 8"/>
+  <path d="M252 194H289" stroke="#fff" stroke-width="2"/>
+  <path d="M252 190H289" stroke="#fff" stroke-width="4" stroke-dasharray="2 4"/>
   <path d="M244 474l4-8h-8zm17-61 4 8h-8zm19 0 4 8h-8z" fill="#e6e9e5" opacity=".75"/>`;
 
 function handleBounds(key) {
   if (key === "mergeEnd") return mergeEndBounds(draft.node);
+  if (key === "taperLength") return taperLengthBounds(draft);
   if (key === "node") return [275, 375];
   return key === "entry" ? [25, 125] : [20, Math.min(125, world.start.y - draft.node)];
 }
@@ -103,6 +105,7 @@ function updateHandle(key, value) {
     draft.mergeEnd = clamp(draft.mergeEnd, ...mergeEndBounds(draft.node));
     draft.exit = clamp(draft.exit, ...handleBounds("exit"));
   }
+  draft.taperLength = clamp(draft.taperLength, ...taperLengthBounds(draft));
 }
 
 function mergeLength(config) {
@@ -110,14 +113,14 @@ function mergeLength(config) {
 }
 
 function handle(kind, x, y, selected = true) {
-  const names = { node: "Merge node", mergeEnd: "Merge lane end", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
+  const names = { node: "Merge node", mergeEnd: "Merge lane end", taperLength: "Taper start", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
   const lane = ["source", "outer", "auxiliary"].includes(kind);
   return `<g class="map-handle" data-handle="${kind}" transform="translate(${x} ${y})"
     role="${lane ? "button" : "slider"}" tabindex="0" aria-label="${names[kind]}"
     ${lane ? `aria-pressed="${selected}"` : `aria-valuemin="${handleBounds(kind)[0]}" aria-valuemax="${handleBounds(kind)[1]}" aria-valuenow="${draft[kind]}"`}>
     <circle r="23" fill="transparent"/>
     ${kind === "node" ? '<rect class="symbol" x="-8" y="-8" width="16" height="16" rx="3"/>' :
-      kind === "mergeEnd" ? '<path class="symbol" d="M0-9 9 0 0 9-9 0Z"/>' : '<circle class="symbol" r="7"/>'}
+      kind === "taperLength" ? '<path class="symbol" d="M0-9 9 7H-9Z"/>' : kind === "mergeEnd" ? '<path class="symbol" d="M0-9 9 0 0 9-9 0Z"/>' : '<circle class="symbol" r="7"/>'}
   </g>`;
 }
 
@@ -140,16 +143,22 @@ function mapMarkup(config, run, editing) {
   if (main && aux) {
     content += `<path d="${secondary.path}" fill="none" stroke="#46525b" stroke-width="17"/>`;
   }
-  content += `<path d="M239 181v12" stroke="#263944" stroke-width="6" stroke-linecap="round"/>
-    <circle cx="239" cy="185" r="2" fill="${frame?.green ? "#60717a" : "#ff987d"}"/>
-    <circle cx="239" cy="190" r="2" fill="${frame?.green ? "#9ee6a2" : "#60717a"}"/>`;
+  const phase = frame?.phase ?? "all-red";
+  const light = (road, x, y) => {
+    const color = phase === road ? "#9ee6a2" : phase === road + "-yellow" ? "#ffca74" : "#ff987d";
+    return `<circle cx="${x}" cy="${y}" r="5" fill="#263944"/><circle cx="${x}" cy="${y}" r="2.8" fill="${color}"/>`;
+  };
+  content += light("avenue", 245, 197) + light("cross", 229, 172);
+  if (editing && tool === "signal") {
+    content += '<path d="M254 210V365 M208 180H72" stroke="#c4f8ff" stroke-width="3" opacity=".8" stroke-dasharray="6 5"/>';
+  }
   if (!editing && frame) {
     content += replayMarkers(run.frames, time).map(car => {
       const { length: metres, width } = vehicleDimensions(car.kind);
       const length = metres / scale;
       const halfWidth = width / scale / 2;
       const fill = car.reason ? "#ffc578" : car.kind === "bus" ? "#b9f8ff" : "#e4e9e4";
-      const ring = highlightQueues && car.reason
+      const ring = highlightQueues && car.reason && car.zone === frame.queueZone
         ? `<rect x="${-length / 2 - 1}" y="${-halfWidth - 1}" width="${length + 2}" height="${halfWidth * 2 + 2}" rx="2" fill="none" stroke="#ffab49" stroke-width="1"/>`
         : "";
       return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})">${ring}
@@ -168,7 +177,8 @@ function mapMarkup(config, run, editing) {
         const [min, max] = mergeEndBounds(config.node);
         content += `<path d="M${world.outer} ${min}V${max}" fill="none" stroke="#c4f8ff" opacity=".55" stroke-dasharray="3 4"/>
           <path d="${taper.path}" fill="none" stroke="#c4f8ff" stroke-width="2" stroke-dasharray="7 4"/>`
-          + handle("mergeEnd", world.outer, taper.end);
+          + handle("mergeEnd", world.outer, taper.end) + `<path d="M${world.auxiliary} ${taper.start}h26" stroke="#c4f8ff" stroke-width="1.5"/>`
+          + handle("taperLength", world.auxiliary + 26, taper.start);
       }
     }
     if (tool === "curve") {
@@ -192,12 +202,26 @@ function mapMarkup(config, run, editing) {
   return content;
 }
 
+function queueViewBox(frame) {
+  const queued = frame.markers.filter(car => car.reason && car.zone === frame.queueZone);
+  if (!queued.length) return comparisonViewBox;
+  const xs = queued.map(car => car.x);
+  const ys = queued.map(car => car.y);
+  const left = Math.min(150, ...xs) - 12;
+  const top = Math.min(130, ...ys) - 12;
+  return `${left} ${top} ${Math.max(480, ...xs) + 12 - left} ${Math.max(475, ...ys) + 12 - top}`;
+}
+
 function paintMap() {
   const editing = view === "design";
-  const split = view === "simulate" && comparing;
+  const split = view === "simulate" && comparing && !!currentRun;
   map.toggleAttribute("hidden", split);
   $("#comparison").hidden = !split;
   if (split) {
+    const editedFrame = currentRun.frames[Math.floor(time / step + 1e-8)];
+    const bounds = highlightQueues ? queueViewBox(editedFrame) : comparisonViewBox;
+    $("#original-map").setAttribute("viewBox", bounds);
+    $("#design-map").setAttribute("viewBox", bounds);
     $("#original-map").innerHTML = mapMarkup(baseline, original, false);
     $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
   } else {
@@ -213,50 +237,68 @@ const clock = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(second
 function renderInspector() {
   if (view === "design") {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
-    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes" }[tool];
+    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing" }[tool];
     const detail = {
       move: draft.lanes & 2
-        ? 'Drag the square to move the join, or the diamond to end the merge lane. <span id="merge-length"></span>'
+        ? 'Square moves the join. Diamond ends the lane. Triangle starts the taper. <span id="merge-length"></span>'
         : "Drag the square along Alder Avenue.",
       curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
+      signal: `Split the ${signalCycle}-second cycle between Alder Avenue and the cross street.`,
       lanes: laneSelected ? "Tap a receiving lane to toggle its connection." : "Tap the pickup lane to reveal its connections."
     }[tool];
     const choices = tool === "lanes" && laneSelected ? `<div class="row chips">
       <button data-lane="1" aria-pressed="${!!(draft.lanes & 1)}">Main lane</button>
       <button data-lane="2" aria-pressed="${!!(draft.lanes & 2)}">Merge lane</button>
     </div>` : "";
-    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}<div class="row actions">
+    const timing = tool === "signal" ? `<div class="row spread timing"><label for="green">Alder green</label>
+      <input id="green" type="range" min="${greenBounds[0]}" max="${greenBounds[1]}" value="${draft.green}"/>
+      <output id="green-time" for="green"></output></div>
+      <p id="cross-time"></p>` : "";
+    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${timing}<div class="row actions">
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
-      <button class="primary" data-action="apply" ${changed() ? "" : "disabled"}>Apply</button></div>`;
+      <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button>
+      <button class="primary" data-action="test">Test design</button></div>`;
     updateGeometryReadouts();
+  } else if (!currentRun) {
+    inspector.innerHTML = `<h1>${view === "simulate" ? "Traffic simulation" : "School pickup results"}</h1>
+      <p role="status"></p>${sumoMessage ? '<div class="row actions"><button data-action="retry">Retry</button></div>' : ""}`;
+    inspector.querySelector("[role=status]").textContent = sumoMessage || "Simulating traffic…";
   } else if (view === "simulate") {
     inspector.innerHTML = `<div class="row spread"><h1>Traffic simulation</h1><button data-action="compare" aria-pressed="${comparing}">Compare</button></div>
       <div class="row"><button id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
       <input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Simulation time">
       <span id="clock">${clock(time)}</span></div>
-      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>
-      <div class="row spread simulation-footer"><button data-action="run-sumo" ${sumoWorker ? "disabled" : ""}>Run on-device SUMO</button>
-      <p id="device-sumo-status" role="status"></p></div>`;
-    $("#device-sumo-status").textContent = sumoMessage;
+      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>`;
     updateSimulationReadout();
   } else {
     const a = original.results;
     const b = currentRun.results;
     const rows = [
-      ["Avg. bus delay", `${metric(a.busDelay)} s`, `${metric(b.busDelay)} s`],
-      ["Longest queue", `${metric(a.longestQueue)} m`, `${metric(b.longestQueue)} m`],
-      ["Trips completed", a.finished, b.finished],
-      ["Trips unfinished", a.waiting, b.waiting]
+      ["Peak queue", a.longestQueue, b.longestQueue, "m", 1],
+      ["Bus delay", a.busDelay, b.busDelay, "s", 1],
+      ["Cross-street delay", a.crossDelay, b.crossDelay, "s", 1],
+      ["Pickup trips", a.pickupFinished, b.pickupFinished, "", -1],
+      ["Cross-street trips", a.crossFinished, b.crossFinished, "", -1],
+      ["All trips", a.finished, b.finished, "", -1],
+      ["Collisions", a.collisions, b.collisions, "", 1]
     ];
-    if (sumoComparison) rows.push(["Reported collisions", a.collisions, b.collisions]);
-    const summary = (!sumoComparison || b.collisions === 0) && b.longestQueue < a.longestQueue && b.busDelay <= a.busDelay + .05 && b.waiting <= a.waiting
-      ? "Goal met. The queue is shorter and buses are no slower."
-      : sumoComparison && b.collisions > 0 ? "SUMO reported collisions in your design."
-        : "Shorten the queue without increasing bus delay or unfinished trips.";
-    inspector.innerHTML = `<h1>School pickup results</h1><div class="metrics">
-      <span></span><span class="muted">Original</span><span>Your design</span>
-      ${rows.map(row => row.map(item => `<span>${item}</span>`).join("")).join("")}
-      </div><p>${summary}</p><p class="result-engine">${engineName()}</p>`;
+    const goal = b.collisions === 0 && metric(b.longestQueue) < metric(a.longestQueue) &&
+      metric(b.busDelay) <= metric(a.busDelay) && metric(b.crossDelay) <= metric(a.crossDelay) &&
+      b.finished >= a.finished && b.pickupFinished >= a.pickupFinished && b.crossFinished >= a.crossFinished;
+    const summary = goal ? "Goal met. You shortened the peak queue and protected service on both roads."
+      : b.collisions ? "Revise the layout. SUMO reported a collision."
+        : "Goal: shorten the peak queue while protecting bus delay, cross-street delay, and completed trips.";
+    const cell = (label, before, after, unit, direction) => {
+      const suffix = unit ? ` ${unit}` : "";
+      const delta = metric(after) - metric(before);
+      return `<tr><th scope="row">${label}</th><td>${metric(before)}${suffix}</td><td>${metric(after)}${suffix}</td>
+        <td class="${delta === 0 ? "muted" : delta * direction < 0 ? "gain" : "loss"}">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}${suffix}</td></tr>`;
+    };
+    inspector.innerHTML = `<h1>School pickup results</h1><table class="metrics" aria-label="Simulation results by design">
+      <thead><tr><th scope="col">Measure</th><th scope="col">Original</th><th scope="col">Yours</th><th scope="col">Change</th></tr></thead>
+      <tbody>${rows.map(row => cell(...row)).join("")}</tbody></table><p>${summary}</p>
+      <div class="row actions"><button data-action="peak">See peak queue</button></div>`;
+
   }
 }
 
@@ -268,18 +310,15 @@ function render() {
   renderInspector();
 }
 
-function engineName() {
-  return sumoComparison ? `Eclipse SUMO · ${sumoSource}` : "Built-in engine";
-}
-
 function updateSimulationReadout() {
   const index = Math.floor(time / step + 1e-8);
   $("#clock").textContent = clock(time);
   $("#scrub").value = time;
-  const stats = frame => `${frame.finished} trips · ${metric(frame.longestQueue)} m peak queue`;
+  const stats = frame => `${frame.finished} trips · ${metric(frame.longestQueue)} m queued`;
   $("#original-stats").textContent = stats(original.frames[index]);
-  $("#design-stats").textContent = stats(currentRun.frames[index]);
-  $("#live").textContent = comparing ? engineName() : `${stats(currentRun.frames[index])} · ${engineName()}`;
+  const edited = currentRun.frames[index];
+  $("#design-stats").textContent = stats(edited);
+  $("#live").textContent = highlightQueues ? edited.queueZone || "No queue at this time" : comparing ? "Eclipse SUMO" : stats(edited);
 }
 
 function toggleLane(bit) {
@@ -303,7 +342,7 @@ function finishDrag(cancel = false) {
 
 map.addEventListener("pointerdown", event => {
   const target = event.target.closest("[data-handle]");
-  if (view !== "design" || !target || tool === "lanes" || drag || event.button !== 0) return;
+  if (view !== "design" || !target || tool === "lanes" || tool === "signal" || drag || event.button !== 0) return;
   const key = target.dataset.handle;
   drag = { key, start: mapPoint(event), id: event.pointerId, before: { ...draft } };
   map.setPointerCapture(event.pointerId);
@@ -313,6 +352,7 @@ map.addEventListener("pointermove", event => {
   const p = mapPoint(event);
   const { key, start, before } = drag;
   const delta = key === "entry" ? start.x - p.x : p.y - start.y;
+  draft.taperLength = before.taperLength;
   if (key === "node") {
     draft.mergeEnd = before.mergeEnd;
     draft.exit = before.exit;
@@ -324,7 +364,14 @@ map.addEventListener("pointermove", event => {
 
 function updateGeometryReadouts() {
   const length = $("#merge-length");
-  if (length) length.textContent = `Merge lane ${mergeLength(draft)} m.`;
+  if (length) {
+    const taper = mergeTaper(draft);
+    length.textContent = `Lane ${mergeLength(draft)} m · taper ${metric(draft.taperLength * scale)} m at ${metric(taper.speed * 3.6)} km/h · ${metric((taper.end - world.signal) * scale)} m to signal.`;
+  }
+  if ($("#green-time")) {
+    $("#green-time").textContent = `${draft.green} s`;
+    $("#cross-time").textContent = `Cross street ${signalCycle - draft.green - 2 * clearance} s green · ${2 * clearance} s changeover`;
+  }
   const readout = $("#curve-readout");
   if (readout) {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
@@ -380,15 +427,12 @@ function enterView(next) {
   cancelAnimationFrame(animationId);
   playing = false;
   previousFrame = 0;
-  if (next !== "design") {
-    original = sumoComparison?.original ?? (originalBuiltIn ??= simulate(baseline));
-    currentRun = sumoComparison?.edited ?? simulate(design);
-  }
   if (next === "simulate" && view !== "simulate") {
     time = 0;
     highlightQueues = false;
   }
   view = next;
+  if (next !== "design" && !currentRun && !sumoMessage) runDeviceSumo();
   render();
 }
 
@@ -407,22 +451,26 @@ document.addEventListener("click", event => {
     }
     enterView(nextView);
   } else if (lane) toggleLane(Number(lane));
-  else if (action === "apply") {
-    history.push(design);
-    design = { ...draft };
-    useBuiltIn();
-    save();
-    render();
+  else if (action === "apply" || action === "test") {
+    if (changed()) {
+      history.push(design);
+      design = { ...draft };
+      invalidateRun();
+      save();
+    }
+    if (action === "test") enterView("simulate");
+    else render();
   } else if (action === "undo" || action === "cancel") {
     if (action === "undo" && history.length) {
       design = history.pop();
-      useBuiltIn();
+      invalidateRun();
       save();
     }
     draft = { ...design };
     render();
-  } else if (action === "run-sumo") {
+  } else if (action === "retry") {
     runDeviceSumo();
+    render();
   } else if (action === "compare") {
     comparing = !comparing;
     render();
@@ -430,14 +478,11 @@ document.addEventListener("click", event => {
   } else if (action === "peak") {
     cancelAnimationFrame(animationId);
     playing = false;
-    const frames = currentRun.frames;
-    const index = frames.findIndex(frame => frame.longestQueue === currentRun.results.longestQueue);
-    time = index < 0 ? 0 : Number((index * step).toFixed(1));
+    view = "simulate";
+    time = Number((currentRun.results.peakFrame * step).toFixed(1));
     highlightQueues = true;
     comparing = true;
-    paintMap();
-    updateSimulationReadout();
-    renderInspector();
+    render();
     $('[data-action="peak"]').focus();
   } else if (action === "play") {
     playing = !playing;
@@ -449,8 +494,19 @@ document.addEventListener("click", event => {
   }
 });
 inspector.addEventListener("input", event => {
+  if (event.target.id === "green") {
+    draft.green = Number(event.target.value);
+    updateGeometryReadouts();
+    $('[data-action="apply"]').disabled = !changed();
+    const secondary = inspector.querySelector(".actions button");
+    secondary.dataset.action = changed() ? "cancel" : "undo";
+    secondary.textContent = changed() ? "Cancel" : "Undo";
+    secondary.disabled = !changed() && !history.length;
+    return;
+  }
   if (event.target.id !== "scrub") return;
   time = Number(event.target.value);
+  highlightQueues = false;
   paintMap();
   updateSimulationReadout();
 });
@@ -460,127 +516,57 @@ $("#menu").addEventListener("click", () => {
   panel.hidden = !panel.hidden;
   $("#menu").setAttribute("aria-expanded", !panel.hidden);
 });
-function sumoStatus(message) {
-  const status = $("#sumo-status");
-  status.textContent = message;
-  status.hidden = !message;
-}
-
-function showSumoComparison(comparison, source) {
-  sumoComparison = comparison;
-  sumoSource = source;
-  $("#use-built-in").hidden = false;
-  if (!$("#menu-panel").hidden) $("#menu").click();
-  time = 0;
-  comparing = true;
-  highlightQueues = false;
-  enterView("simulate");
-}
-
-function stopDeviceSumo() {
+function invalidateRun() {
   sumoWorker?.terminate();
   sumoWorker = undefined;
+  currentRun = undefined;
+  original = undefined;
   sumoMessage = "";
+  time = 0;
+  highlightQueues = false;
 }
 
 function runDeviceSumo() {
   if (sumoWorker) return;
   const runDesign = design;
-  const fail = message => {
-    stopDeviceSumo();
-    sumoMessage = message;
-    if (view === "simulate") renderInspector();
+  const fail = error => {
+    console.warn("On-device SUMO failed", error);
+    invalidateRun();
+    sumoMessage = "The simulation couldn’t finish. Try again.";
+    if (view !== "design") render();
   };
   try {
     const worker = new Worker(new URL("./sumo-worker.mjs", import.meta.url), { type: "module" });
     sumoWorker = worker;
-    sumoMessage = "Simulating both designs…";
-    worker.onerror = () => fail("Could not load on-device SUMO.");
+    sumoMessage = "";
+    worker.onerror = error => { if (sumoWorker === worker) fail(error.message); };
+    worker.onmessageerror = () => { if (sumoWorker === worker) fail("Could not read worker results."); };
     worker.onmessage = ({ data }) => {
       if (sumoWorker !== worker) return;
       try {
         if (data.error) throw new Error(data.error);
-        const comparison = readSumoComparison(data, runDesign);
-        stopDeviceSumo();
-        if (view !== "design") showSumoComparison(comparison, "On-device run");
-        else {
-          sumoComparison = comparison;
-          sumoSource = "On-device run";
-          $("#use-built-in").hidden = false;
-        }
+        const comparison = readSumoComparison({ ...data, original: data.original ?? originalCache }, runDesign);
+        original = originalCache = comparison.original;
+        currentRun = comparison.edited;
+        worker.terminate();
+        sumoWorker = undefined;
+        if (view !== "design") render();
       } catch (error) {
-        console.warn("On-device SUMO failed", error);
-        fail("On-device SUMO could not finish this design.");
+        fail(error);
       }
     };
-    worker.postMessage(sumoRequest(runDesign));
-    renderInspector();
+    const request = sumoRequest(runDesign);
+    if (originalCache) delete request.original;
+    worker.postMessage(request);
   } catch (error) {
-    console.warn("On-device SUMO failed", error);
-    fail("Could not start on-device SUMO.");
+    fail(error);
   }
 }
-
-function useBuiltIn() {
-  stopDeviceSumo();
-  sumoComparison = undefined;
-  $("#use-built-in").hidden = true;
-  sumoStatus("");
-}
-
-$("#use-built-in").addEventListener("click", () => {
-  useBuiltIn();
-  $("#menu").click();
-  time = 0;
-  highlightQueues = false;
-  enterView(view);
-});
-
-$("#export-sumo").addEventListener("click", () => {
-  if (changed()) {
-    sumoStatus("Apply or cancel your draft before exporting.");
-    return;
-  }
-  const payload = JSON.stringify(sumoRequest(design));
-  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "traffic-manager-sumo-request.json";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  sumoStatus("Exported both designs for the desktop SUMO runner.");
-});
-
-$("#import-sumo").addEventListener("click", () => {
-  if (changed()) {
-    sumoStatus("Apply or cancel your draft before importing.");
-    return;
-  }
-  $("#sumo-file").click();
-});
-
-$("#sumo-file").addEventListener("change", async event => {
-  const input = event.target;
-  const file = input.files[0];
-  input.value = "";
-  if (!file) return;
-  try {
-    if (file.size > 32 * 1024 * 1024) throw new Error("Choose a SUMO results file smaller than 32 MB.");
-    const payload = JSON.parse(await file.text());
-    if (changed()) throw new Error("Apply or cancel your draft before importing.");
-    const comparison = readSumoComparison(payload, design);
-    stopDeviceSumo();
-    sumoStatus("SUMO comparison loaded for this session.");
-    showSumoComparison(comparison, "Imported run");
-  } catch (error) {
-    sumoStatus(error instanceof SyntaxError ? "Choose a valid SUMO results JSON file." : error.message);
-  }
-});
 
 $("#reset").addEventListener("click", () => {
   history.push(design);
   design = { ...baseline };
-  useBuiltIn();
+  invalidateRun();
   draft = { ...design };
   save();
   $("#menu").click();

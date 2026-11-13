@@ -29,17 +29,13 @@
   </header>
   <div id="menu-panel" class="glass menu-panel" hidden>
     <span id="offline">Preparing offline play…</span>
-    <button id="export-sumo" type="button">Export designs for SUMO</button>
-    <button id="import-sumo" type="button">Open SUMO results</button>
-    <input id="sumo-file" type="file" accept=".json,application/json" hidden>
-    <button id="use-built-in" type="button" hidden>Use built-in engine</button>
-    <span id="sumo-status" role="status" hidden></span>
     <button id="reset" type="button">Restore original design</button>
   </div>
   <aside class="glass tools" aria-label="Road tools">
     <button type="button" data-tool="move" aria-label="Move node"></button>
     <button type="button" data-tool="curve" aria-label="Adjust curve"></button>
     <button type="button" data-tool="lanes" aria-label="Connect lanes"></button>
+    <button type="button" data-tool="signal" aria-label="Signal timing"></button>
   </aside>
   <section id="inspector" class="glass inspector" aria-label="Design controls"></section>
   <nav class="glass tabs" aria-label="Game views">

@@ -41,8 +41,11 @@ button[aria-pressed="true"], .primary { background: var(--sky) !important; color
 .chips { flex-wrap: wrap; margin-top: 6px; }
 .chips button { font-size: .82rem; }
 input[type="range"] { min-width: 50px; flex: 1; height: 32px; accent-color: var(--sky); }
-.metrics { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 12px; margin: 6px 0; font-size: .84rem; }
-.metrics > :nth-child(3n+2), .metrics > :nth-child(3n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+.metrics { width: 100%; margin: 6px 0; font-size: .84rem; border-collapse: collapse; }
+.metrics th, .metrics td { padding: 3px 0 3px 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.metrics th:first-child { padding-left: 0; text-align: left; }
+.metrics th { font-weight: 400; }
+.metrics thead { color: var(--muted); }
 .metrics .muted { color: var(--muted); }
 .map-handle { cursor: grab; touch-action: none; outline: none; }
 .map-handle[role="button"] { cursor: pointer; }
@@ -59,7 +62,7 @@ button { touch-action: manipulation; }
 .comparison {
   position: absolute;
   inset: max(76px, calc(env(safe-area-inset-top) + 66px)) 12px
-    calc(max(10px, env(safe-area-inset-bottom)) + 220px);
+    calc(max(10px, env(safe-area-inset-bottom)) + 205px);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -85,6 +88,8 @@ button { touch-action: manipulation; }
 .comparison-panel output { font-size: .75rem; font-variant-numeric: tabular-nums; }
 .comparison-panel svg { display: block; width: 100%; height: 100%; }
 .simulation-footer p { font-size: .75rem; }
-.inspector .result-engine { margin-top: 5px; font-size: .75rem; }
 .menu-panel button { display: block; width: 100%; margin-top: 4px; text-align: left; }
-#sumo-status { max-width: 240px; }
+.metrics .gain { color: #adf0be; }
+.metrics .loss { color: #ffcd9c; }
+.timing { margin-top: 4px; }
+.timing output { min-width: 2.6rem; text-align: right; }

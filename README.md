@@ -10,59 +10,35 @@ GitHub Pages serves the latest passing push to `main` at the home URL. Branches 
 
 For initial setup, select **Settings → Pages → Source → GitHub Actions** in TrafficManager. After the tests on `main` pass, run **Publish Traffic Manager** from the Actions tab if Pages was enabled after the automatic run.
 
-## Play locally
+## School Pickup
 
-Run `npm start` and open http://127.0.0.1:4173. The game itself requires no dependencies.
+- **Move node**. Drag the square along Alder Avenue. With the auxiliary lane connected, drag the diamond to end the lane and the triangle to start its taper. A longer taper raises the modeled curve speed and takes up more of the lane. A lane ending close to the signal leaves less room for the queue.
+- **Adjust curve**. Drag the round handles to change the pickup bend while keeping its ends aligned. The radius limits the modeled approach speed.
+- **Connect lanes**. Tap the pickup lane and choose its receiving lanes.
+- **Signal timing**. Split green time between Alder Avenue and the cross street in a fixed 40-second cycle. Yellow and all-red clearance are built in.
+- **Test design** applies edits and opens **Simulate**. Simulate and Results run Eclipse SUMO 1.28.0 in a browser worker. The two layouts share demand and simulation time. **Worst backup** jumps to your largest measured queue and highlights its road.
+- **Results** shows changes in queue length, bus and cross-street delay, completed trips, and collisions. The objective is to shorten the queue while protecting service on both roads.
 
-- In **Design**, drag the square merge node along Alder Avenue, or select **Adjust curve** and drag either round handle. The handles keep the curve aligned with the adjoining roads.
-- Select **Connect lanes** and tap the pickup lane. Toggle the main lane and auxiliary merge lane. With the merge lane enabled, select **Move node** and drag the diamond to change where it ends. Apply edits to save them locally, or undo the last applied design.
-- In **Simulate**, watch the original and edited road side by side with the same arrivals and clock. Tap **Compare** for the single-map view, or **Worst backup** to pause at the edited design’s peak queue. Amber highlights show queued vehicles.
-- **Results** compares bus delay, longest queue, and completed and unfinished trips. The top-right menu can restore the original layout.
+The 210-second scenario uses a fixed 116-trip schedule and 0.2-second simulation steps. Queue length counts near-stopped vehicles and nominal gaps on the longest queued lane. At the end of the run, the difference between scheduled trips and completed trips is the number still unfinished.
 
-The service worker caches the playtest after the first visit over HTTPS or localhost. Open the menu to check when offline play is ready. On an iPhone, Home Screen installation requires serving the game over HTTPS. The save belongs to that browser and origin.
+## Build and verify
 
-## Compare with Eclipse SUMO
-
-1. In the game menu, choose **Export designs for SUMO** after applying your edits.
-2. On a desktop with Python, install the pinned native engine and run the comparison from this checkout.
-
-   ```sh
-   python3 -m pip install eclipse-sumo==1.28.0 sumo-data==1.28.0
-   python3 scripts/run-sumo.py /path/to/traffic-manager-sumo-request.json /path/to/sumo-results.json
-   ```
-
-3. In the game menu, choose **Open SUMO results** and select the generated file. Both panes use that engine’s vehicle positions and trip data. The Results tab shows reported collisions. Choose **Use built-in engine** to return to the local simulator.
-
-The desktop runner generates a SUMO network from the corridor’s lane connections, curve, taper, and signal, then runs the original and edited designs with the same departure schedule. It uses the direct curve as the shared pickup approach when both connections are enabled and lets SUMO generate internal junction geometry. Imported SUMO comparisons are session-only and tied to the exact exported design. The installed web app simulates edits offline with the built-in engine and can open an existing SUMO results file offline.
-
-## Verify
+Build the offline engine with Emscripten 4.0.23, CMake 3.31 or later, and Ninja on your path. The build adds about 21 MB of uncompressed assets. The app caches them on its first online visit.
 
 ```sh
+bash scripts/build-sumo-wasm.sh
 npm ci
-npm test
-npm run test:sumo # With native SUMO installed
-npx playwright install chromium
-npm run test:browser
+npm start
 ```
 
-The model uses a fixed arrival schedule and 0.2-second steps. Browser tests use touch drags and browser clicks at 669 × 951 and 390 × 844, then reload the cached game offline and verify the saved design. The simulation is tuned for this corridor and uses a sampled minimum curve radius, a fixed signal plan, and simplified lane following, vehicle clearance, and zipper priority when both approaches queue. The longest queue measures stopped or near-stopped vehicles per lane, using vehicle lengths and nominal gaps. Results count unfinished trips explicitly.
+Open http://127.0.0.1:4173. To verify the native engine and compare it with the browser run, install the same SUMO version.
 
-The hardware playtest question is whether you can make the intended edit on your first or second try, and whether you can see enough in replay to want to try another design.
+```sh
+python3 -m pip install eclipse-sumo==1.28.0 sumo-data==1.28.0
+npm test
+npm run test:sumo
+npx playwright install chromium
+TRAFFIC_TEST_SUMO=1 npm run test:browser
+```
 
-
-### On-device SUMO preview
-
-In Simulate, tap **Run on-device SUMO**. The app runs the original and edited
-layouts using Eclipse SUMO 1.28.0 inside a browser worker. After the first visit
-shows **Ready for offline play** in the menu, you can run new layouts offline.
-The engine adds about 21 MB of uncompressed assets to this preview.
-
-To build locally, put Emscripten 4.0.23, CMake 3.31 or later, and Ninja on your
-path and run `bash scripts/build-sumo-wasm.sh`, followed by `npm start`.
-The build script pins the SUMO and Xerces source versions and carries the small
-patches required for a static browser build. The output includes their license
-and notice files.
-
-With native SUMO 1.28.0 available, run
-`TRAFFIC_TEST_SUMO=1 TRAFFIC_TEST_WASM=1 npm run test:browser` to verify offline
-runs and compare WebAssembly results and vehicle trajectories with native SUMO.
+The native test runner and the offline game use the same SUMO network builder, signal program, and results parser. Browser tests exercise touch edits at 669 × 951 and 390 × 844, reload offline, and rerun the saved design.

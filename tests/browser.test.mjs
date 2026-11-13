@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
+import { sumoRequest } from "../sumo-export.mjs";
 
 const url = "http://127.0.0.1:4183";
 const server = spawn("python3", ["-m", "http.server", "4183", "--bind", "127.0.0.1"], { stdio: "ignore" });
@@ -77,7 +78,24 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       assert.equal(await endHandle.getAttribute("aria-valuenow"), "224");
       await drag("Merge lane end", 0, 23);
       await click("Apply");
-      await click("Simulate");
+      const taperStart = page.getByRole("slider", { name: "Taper start" });
+      const beforeTaper = Number(await taperStart.getAttribute("aria-valuenow"));
+      await drag("Taper start", 0, 16);
+      assert.ok(Number(await taperStart.getAttribute("aria-valuenow")) > beforeTaper);
+      assert.equal(await endHandle.getAttribute("aria-valuenow"), String(shorterEnd));
+      await click("Apply");
+      await click("Signal timing");
+      const green = page.getByRole("slider", { name: "Alder green" });
+      await green.press("End");
+      await page.screenshot({ path: `test-results/signal-${viewport.width}.png` });
+      assert.equal(await page.locator("#green-time").textContent(), "26 s");
+      assert.match(await page.locator("#cross-time").textContent(), /4 s green/);
+      await click("Cancel");
+      assert.equal(await green.inputValue(), "21");
+      await green.press("End");
+      await click("Test design");
+      await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+      assert.equal(await page.getByRole("button", { name: "Run on-device SUMO" }).count(), 0);
       await click("Play");
       await page.waitForFunction(() => Number(document.querySelector("#scrub").value) > 1);
       await click("Pause");
@@ -97,82 +115,68 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       assert.equal(await page.locator("#clock").textContent(), "3:30");
       await page.screenshot({ path: `test-results/simulate-${viewport.width}.png` });
       await click("Results");
-      const results = await page.locator("#inspector").textContent();
-      assert.match(results, /School pickup results/);
+      const results = await page.locator(".metrics").textContent();
+      assert.match(results, /Cross-street delay/);
+      assert.match(results, /Pickup trips/);
+      assert.ok(await page.locator(".metrics .gain").count() > 0);
+      assert.ok(await page.locator(".metrics .loss").count() > 0);
+      await click("See peak queue");
+      await page.getByRole("button", { name: "Worst backup", exact: true }).waitFor();
+      assert.match(await page.locator("#live").textContent(), /Alder Avenue|Cross street|Pickup loop|Merge lane|Junction/);
       await click("Menu");
       await page.getByText("Ready for offline play", { exact: true }).waitFor();
       await context.setOffline(true);
       await page.reload();
       assert.equal(await endHandle.getAttribute("aria-valuenow"), String(shorterEnd));
+      await click("Signal timing");
+      assert.equal(await green.inputValue(), "26");
       await click("Results");
-      assert.equal(await page.locator("#inspector").textContent(), results);
+      await page.locator(".metrics").waitFor({ timeout: 20000 });
+      assert.equal(await page.locator(".metrics").textContent(), results);
       await page.screenshot({ path: `test-results/results-${viewport.width}.png` });
       if (viewport.width === 669 && process.env.TRAFFIC_TEST_SUMO === "1") {
-        await click("Menu");
-        const downloaded = page.waitForEvent("download");
-        await click("Export designs for SUMO");
         const requestPath = "test-results/sumo-request.json";
         const resultsPath = "test-results/sumo-results.json";
-        await (await downloaded).saveAs(requestPath);
-        const result = spawnSync("python3", ["scripts/run-sumo.py", requestPath, resultsPath], { encoding: "utf8" });
+        const design = await page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+        const request = sumoRequest(design);
+        await writeFile(requestPath, JSON.stringify(request));
+        const result = spawnSync(process.execPath, ["scripts/run-sumo.mjs", requestPath, resultsPath], { encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
-        if (process.env.TRAFFIC_TEST_WASM === "1") {
-          const request = JSON.parse(await readFile(requestPath, "utf8"));
-          const native = JSON.parse(await readFile(resultsPath, "utf8"));
-          const wasm = await page.evaluate(input => new Promise((resolve, reject) => {
-            const worker = new Worker("./sumo-worker.mjs", { type: "module" });
-            worker.onmessage = event => {
-              worker.terminate();
-              resolve(event.data);
-            };
-            worker.onerror = reject;
-            worker.postMessage(input);
-          }), request);
-          assert.equal(wasm.error, undefined);
-          for (const side of ["original", "edited"]) {
-            assert.deepEqual(wasm[side].results, native[side].results);
-            assert.equal(wasm[side].results.collisions, 0);
-            assert.equal(wasm[side].frames.length, native[side].frames.length);
-            for (const [index, frame] of wasm[side].frames.entries()) {
-              const { markers, ...stats } = frame;
-              const { markers: reference, ...nativeStats } = native[side].frames[index];
-              assert.deepEqual(stats, nativeStats);
-              assert.equal(markers.length, reference.length);
-              for (const [i, marker] of markers.entries()) {
-                const { x, y, angle, ...vehicle } = marker;
-                const { x: nx, y: ny, angle: na, ...nativeVehicle } = reference[i];
-                assert.deepEqual(vehicle, nativeVehicle);
-                assert.ok(Math.hypot(x - nx, y - ny) < .001 && Math.abs(angle - na) < .0001,
-                  `${side} frame ${index}, vehicle ${marker.id}: ${x},${y},${angle} vs ${nx},${ny},${na}`);
-              }
+        const native = JSON.parse(await readFile(resultsPath, "utf8"));
+        const wasm = await page.evaluate(input => new Promise((resolve, reject) => {
+          const worker = new Worker("./sumo-worker.mjs", { type: "module" });
+          worker.onmessage = event => {
+            worker.terminate();
+            resolve(event.data);
+          };
+          worker.onerror = reject;
+          worker.postMessage(input);
+        }), request);
+        assert.equal(wasm.error, undefined);
+        for (const side of ["original", "edited"]) {
+          assert.deepEqual(wasm[side].results, native[side].results);
+          assert.equal(wasm[side].results.collisions, 0);
+          assert.equal(wasm[side].frames.length, native[side].frames.length);
+          for (const [index, frame] of wasm[side].frames.entries()) {
+            const { markers, ...stats } = frame;
+            const { markers: reference, ...nativeStats } = native[side].frames[index];
+            assert.deepEqual(stats, nativeStats);
+            assert.equal(markers.length, reference.length);
+            for (const [i, marker] of markers.entries()) {
+              const { x, y, angle, ...vehicle } = marker;
+              const { x: nx, y: ny, angle: na, ...nativeVehicle } = reference[i];
+              assert.deepEqual(vehicle, nativeVehicle);
+              assert.ok(Math.hypot(x - nx, y - ny) < .001 && Math.abs(angle - na) < .0001,
+                `${side} frame ${index}, vehicle ${marker.id}: ${x},${y},${angle} vs ${nx},${ny},${na}`);
             }
           }
         }
-        const choosing = page.waitForEvent("filechooser");
-        await click("Open SUMO results");
-        await (await choosing).setFiles(resultsPath);
-        await page.getByText("Eclipse SUMO · Imported run", { exact: true }).waitFor();
-        await click("Worst backup");
-        await page.screenshot({ path: "test-results/sumo-comparison-669.png" });
-        await click("Results");
-        assert.match(await page.locator("#inspector").textContent(), /Reported collisions/);
-        await click("Menu");
-        await click("Use built-in engine");
-        await page.getByText("Built-in engine", { exact: true }).waitFor();
-      }
-      if (process.env.TRAFFIC_TEST_WASM === "1") {
-        await click("Simulate");
-        await click("Run on-device SUMO");
-        await page.getByText("Eclipse SUMO · On-device run", { exact: true }).waitFor({ timeout: 20000 });
-        await click("Worst backup");
-        await page.screenshot({ path: `test-results/device-sumo-${viewport.width}.png` });
-        await click("Results");
-        assert.match(await page.locator("#inspector").textContent(), /Reported collisions/);
       }
       await click("Menu");
       await click("Restore original design");
       await click("Results");
-      assert.match(await page.locator("#inspector").textContent(), /Shorten the queue/);
+      await page.locator(".metrics").waitFor({ timeout: 20000 });
+      assert.equal(await page.locator(".metrics .gain, .metrics .loss").count(), 0);
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight ||
         document.documentElement.scrollWidth > innerWidth), false);

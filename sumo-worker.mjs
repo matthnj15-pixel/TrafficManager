@@ -1,6 +1,6 @@
 import createNetconvert from "./sumo-wasm/netconvert.mjs";
 import createSumo from "./sumo-wasm/sumo.mjs";
-import { netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
+import { configureSignal, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
 
 async function run(create, args, inputs, outputs) {
   const messages = [];
@@ -15,16 +15,17 @@ async function simulate(request, layout) {
   const inputs = sumoInputs(request, layout);
   const [network] = await run(createNetconvert, netconvertArgs, inputs, ["corridor.net.xml"]);
   const [trace, trips, collisions] = await run(createSumo, sumoArgs(request), {
-    "corridor.net.xml": network, "routes.xml": inputs["routes.xml"]
+    "corridor.net.xml": configureSignal(network, layout.design.green, request.signalCycle), "routes.xml": inputs["routes.xml"]
   }, ["trace.xml", "trips.xml", "collisions.xml"]);
   return sumoResult(request, layout, trace, trips, collisions);
 }
 
 self.onmessage = async ({ data: request }) => {
   try {
-    const original = await simulate(request, request.original);
-    const edited = await simulate(request, request.edited);
-    self.postMessage({ schema: "traffic-manager.sumo-comparison.v1", version: "1.28.0", original, edited });
+    const original = request.original ? await simulate(request, request.original) : undefined;
+    const edited = original && JSON.stringify(request.original.design) === JSON.stringify(request.edited.design)
+      ? original : await simulate(request, request.edited);
+    self.postMessage({ schema: "traffic-manager.sumo-comparison.v2", version: "1.28.0", original, edited });
   } catch (error) {
     self.postMessage({ error: error.message });
   }

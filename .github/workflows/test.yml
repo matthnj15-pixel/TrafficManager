@@ -37,7 +37,6 @@ jobs:
       - run: npm run test:browser
         env:
           TRAFFIC_TEST_SUMO: '1'
-          TRAFFIC_TEST_WASM: '1'
       - uses: actions/upload-artifact@v4
         with:
           name: sumo-wasm
