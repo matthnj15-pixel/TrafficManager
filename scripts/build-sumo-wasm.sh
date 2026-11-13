@@ -34,7 +34,8 @@ emcmake cmake -S "$work/sumo" -B "$work/sb" -G Ninja \
   -DENABLE_FMI=OFF -DENABLE_NETEDIT=OFF -DENABLE_PYTHON_BINDINGS=OFF -DENABLE_JAVA_BINDINGS=OFF \
   -DENABLE_CS_BINDINGS=OFF -DENABLE_PROJ=OFF -DENABLE_FOX=OFF -DENABLE_EIGEN=OFF -DENABLE_FMT=OFF \
   -DENABLE_GTEST=OFF -DENABLE_PARQUET=OFF "-DXercesC_INCLUDE_DIR=$work/xerces/src;$work/xb/src" \
-  "-DXercesC_LIBRARY=$work/xb/src/libxerces-c.a" -DXercesC_VERSION=3.3.0
+  "-DXercesC_LIBRARY=$work/xb/src/libxerces-c.a" -DXercesC_VERSION=3.3.0 \
+  "-DPython_EXECUTABLE=$(command -v python3)"
 cmake --build "$work/sb" --target sumo netconvert --parallel "${SUMO_BUILD_JOBS:-4}"
 for tool in sumo netconvert; do
   cp "$work/sb/src/$tool.js" "$output/$tool.mjs"
