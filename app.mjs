@@ -1,4 +1,4 @@
-import { baseline, world, curve, simulate, duration, step, validate } from "./model.mjs";
+import { baseline, world, curve, simulate, duration, step, validate, mergeEndBounds, mergeTaper, replayMarkers, scale, vehicleDimensions } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
 const map = $("#map");
@@ -37,7 +37,7 @@ let animationId;
 function readSave() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey));
-    if (validate(saved)) return saved;
+    if (validate(saved)) return { ...saved, mergeEnd: mergeTaper(saved).end, exit: Math.min(saved.exit, world.start.y - saved.node) };
   } catch { /* A missing or unreadable save opens the original corridor. */ }
   return { ...baseline };
 }
@@ -84,14 +84,33 @@ const avenue = `
   <path d="M252 176H289" stroke="#fff" stroke-width="4" stroke-dasharray="2 4"/>
   <path d="M244 474l4-8h-8zm17-61 4 8h-8zm19 0 4 8h-8z" fill="#e6e9e5" opacity=".75"/>`;
 
+function handleBounds(key) {
+  if (key === "mergeEnd") return mergeEndBounds(draft.node);
+  if (key === "node") return [275, 375];
+  return key === "entry" ? [25, 125] : [20, Math.min(125, world.start.y - draft.node)];
+}
+
+function updateHandle(key, value) {
+  draft[key] = Math.round(clamp(value, ...handleBounds(key)));
+  if (key === "node") {
+    draft.mergeEnd = clamp(draft.mergeEnd, ...mergeEndBounds(draft.node));
+    draft.exit = clamp(draft.exit, ...handleBounds("exit"));
+  }
+}
+
+function mergeLength(config) {
+  return Math.round((config.node - config.mergeEnd) * scale);
+}
+
 function handle(kind, x, y, selected = true) {
-  const names = { node: "Merge node", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
+  const names = { node: "Merge node", mergeEnd: "Merge lane end", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
   const lane = ["source", "outer", "auxiliary"].includes(kind);
   return `<g class="map-handle" data-handle="${kind}" transform="translate(${x} ${y})"
     role="${lane ? "button" : "slider"}" tabindex="0" aria-label="${names[kind]}"
-    ${lane ? `aria-pressed="${selected}"` : `aria-valuemin="${kind === "node" ? 275 : kind === "entry" ? 25 : 20}" aria-valuemax="${kind === "node" ? 375 : 125}" aria-valuenow="${draft[kind]}"`}>
+    ${lane ? `aria-pressed="${selected}"` : `aria-valuemin="${handleBounds(kind)[0]}" aria-valuemax="${handleBounds(kind)[1]}" aria-valuenow="${draft[kind]}"`}>
     <circle r="23" fill="transparent"/>
-    ${kind === "node" ? '<rect class="symbol" x="-8" y="-8" width="16" height="16" rx="3"/>' : '<circle class="symbol" r="7"/>'}
+    ${kind === "node" ? '<rect class="symbol" x="-8" y="-8" width="16" height="16" rx="3"/>' :
+      kind === "mergeEnd" ? '<path class="symbol" d="M0-9 9 0 0 9-9 0Z"/>' : '<circle class="symbol" r="7"/>'}
   </g>`;
 }
 
@@ -103,11 +122,13 @@ function paintMap() {
   const main = config.lanes & 1;
   const aux = config.lanes & 2;
   const selectedGeometry = main ? primary : secondary;
-  const frame = (showingOriginal ? original : currentRun)?.frames[Math.round(time / step)];
+  const run = showingOriginal ? original : currentRun;
+  const frame = run?.frames[Math.floor(time / step)];
   let content = scenery + avenue;
+  const taper = mergeTaper(config);
   if (aux) {
-    content += `<path d="M292 ${config.node + 1}H313V${world.auxiliaryEnd + 18}L292 ${world.auxiliaryEnd}Z" fill="#46525b"/>
-      <path d="M291 ${config.node}V${world.auxiliaryEnd}" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="7 7"/>`;
+    content += `<path d="${taper.path}" fill="none" stroke="#46525b" stroke-width="20"/>
+      <path d="M291 ${config.node}V${taper.start}" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="7 7"/>`;
   }
   content += `<path d="${selectedGeometry.path}" fill="none" stroke="#e9e7d8" stroke-width="23"/>
     <path d="${selectedGeometry.path}" fill="none" stroke="#46525b" stroke-width="19"/>
@@ -119,12 +140,14 @@ function paintMap() {
     <circle cx="239" cy="185" r="2" fill="${frame?.green ? "#60717a" : "#ff987d"}"/>
     <circle cx="239" cy="190" r="2" fill="${frame?.green ? "#9ee6a2" : "#60717a"}"/>`;
   if (!editing && frame) {
-    content += frame.markers.map(car => {
-      const length = car.kind === "bus" ? 13 : 7;
+    content += replayMarkers(run.frames, time).map(car => {
+      const { length: metres, width } = vehicleDimensions(car.kind);
+      const length = metres / scale;
+      const halfWidth = width / scale / 2;
       const fill = car.reason ? "#ffc578" : car.kind === "bus" ? "#b9f8ff" : "#e4e9e4";
       return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})"><title>${car.reason || (car.kind === "bus" ? "School bus" : "Moving")}</title>
-        <rect x="${-length / 2}" y="-2.6" width="${length}" height="5.2" rx="1.7" fill="${fill}"/>
-        <rect x="${length / 2 - 2.5}" y="-1.7" width="1.5" height="3.4" rx=".4" fill="#416270"/></g>`;
+        <rect x="${-length / 2}" y="${-halfWidth}" width="${length}" height="${halfWidth * 2}" rx="1.7" fill="${fill}"/>
+        <rect x="${length / 2 - 2.5}" y="${-halfWidth * .65}" width="1.5" height="${halfWidth * 1.3}" rx=".4" fill="#416270"/></g>`;
     }).join("");
   }
   if (editing) {
@@ -134,6 +157,12 @@ function paintMap() {
       content += `<path d="M${end.x} 275V375" stroke="#c4f8ff" opacity=".5" stroke-dasharray="3 5"/>
         <path d="${old.path}" fill="none" stroke="#fbfffc" opacity=".7" stroke-dasharray="4 4"/>
         <path d="${path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>` + handle("node", end.x, end.y);
+      if (aux) {
+        const [min, max] = mergeEndBounds(config.node);
+        content += `<path d="M${world.outer} ${min}V${max}" fill="none" stroke="#c4f8ff" opacity=".55" stroke-dasharray="3 4"/>
+          <path d="${taper.path}" fill="none" stroke="#c4f8ff" stroke-width="2" stroke-dasharray="7 4"/>`
+          + handle("mergeEnd", world.outer, taper.end);
+      }
     }
     if (tool === "curve") {
       content += `<path d="${path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
@@ -167,7 +196,9 @@ function renderInspector() {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
     const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes" }[tool];
     const detail = {
-      move: "Drag the square along Alder Avenue.",
+      move: draft.lanes & 2
+        ? 'Drag the square to move the join, or the diamond to end the merge lane. <span id="merge-length"></span>'
+        : "Drag the square along Alder Avenue.",
       curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
       lanes: laneSelected ? "Tap a receiving lane to toggle its connection." : "Tap the pickup lane to reveal its connections."
     }[tool];
@@ -178,6 +209,7 @@ function renderInspector() {
     inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}<div class="row actions">
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
       <button class="primary" data-action="apply" ${changed() ? "" : "disabled"}>Apply</button></div>`;
+    updateGeometryReadouts();
   } else if (view === "replay") {
     inspector.innerHTML = `<div class="row spread"><h1>Traffic replay</h1><button data-action="original">${showingOriginal ? "Original" : "Your design"}</button></div>
       <div class="row"><button id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
@@ -250,14 +282,24 @@ map.addEventListener("pointermove", event => {
   const p = mapPoint(event);
   const { key, start, before } = drag;
   const delta = key === "entry" ? start.x - p.x : p.y - start.y;
-  draft[key] = Math.round(clamp(before[key] + delta, key === "node" ? 275 : key === "entry" ? 25 : 20, key === "node" ? 375 : 125));
+  if (key === "node") {
+    draft.mergeEnd = before.mergeEnd;
+    draft.exit = before.exit;
+  }
+  updateHandle(key, before[key] + delta);
   paintMap();
+  updateGeometryReadouts();
+});
+
+function updateGeometryReadouts() {
+  const length = $("#merge-length");
+  if (length) length.textContent = `Merge lane ${mergeLength(draft)} m.`;
   const readout = $("#curve-readout");
   if (readout) {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
     readout.textContent = `Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h`;
   }
-});
+}
 map.addEventListener("pointerup", event => { if (drag?.id === event.pointerId) finishDrag(); });
 map.addEventListener("pointercancel", event => { if (drag?.id === event.pointerId) finishDrag(true); });
 map.addEventListener("lostpointercapture", event => { if (drag?.id === event.pointerId) finishDrag(true); });
@@ -284,8 +326,7 @@ map.addEventListener("keydown", event => {
   const direction = key === "entry" ? { ArrowLeft: 1, ArrowRight: -1 } : { ArrowUp: -1, ArrowDown: 1 };
   if (!(event.key in direction)) return;
   event.preventDefault();
-  draft[key] = clamp(draft[key] + direction[event.key] * (event.shiftKey ? 5 : 1),
-    key === "node" ? 275 : key === "entry" ? 25 : 20, key === "node" ? 375 : 125);
+  updateHandle(key, draft[key] + direction[event.key] * (event.shiftKey ? 5 : 1));
   render();
   map.querySelector(`[data-handle="${key}"]`).focus();
 });

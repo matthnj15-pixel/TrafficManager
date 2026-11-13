@@ -15,7 +15,7 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 Run `npm start` and open http://127.0.0.1:4173. The game itself requires no dependencies.
 
 - In **Design**, drag the square merge node along Alder Avenue, or select **Adjust curve** and drag either round handle. The handles keep the curve aligned with the adjoining roads.
-- Select **Connect lanes** and tap the pickup lane. Toggle the main lane and auxiliary merge lane. Apply edits to save them locally, or undo the last applied design.
+- Select **Connect lanes** and tap the pickup lane. Toggle the main lane and auxiliary merge lane. With the merge lane enabled, select **Move node** and drag the diamond to change where it ends. Apply edits to save them locally, or undo the last applied design.
 - In **Replay**, switch between the original and edited design. The arrivals are identical. Amber vehicles are waiting on traffic, a gap, or a signal.
 - **Results** compares bus delay, longest queue, and completed and unfinished trips. The top-right menu can restore the original layout.
 
@@ -30,6 +30,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-The model uses a fixed arrival schedule and 0.2-second steps. Browser tests use touch drags and browser clicks at 669 × 951 and 390 × 844, then reload the cached game offline and verify the saved design. The simulation is tuned for this corridor and uses a sampled minimum curve radius, a fixed signal plan, and simplified lane following and merge gaps. The longest queue measures stopped or near-stopped vehicles per lane, using vehicle lengths and nominal gaps. Results count unfinished trips explicitly.
+The model uses a fixed arrival schedule and 0.2-second steps. Browser tests use touch drags and browser clicks at 669 × 951 and 390 × 844, then reload the cached game offline and verify the saved design. The simulation is tuned for this corridor and uses a sampled minimum curve radius, a fixed signal plan, and simplified lane following, vehicle clearance, and zipper priority when both approaches queue. The longest queue measures stopped or near-stopped vehicles per lane, using vehicle lengths and nominal gaps. Results count unfinished trips explicitly.
 
 The hardware playtest question is whether you can make the intended edit on your first or second try, and whether you can see enough in replay to want to try another design.
