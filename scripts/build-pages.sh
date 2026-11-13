@@ -11,16 +11,15 @@ fi
 assets=(index.html styles.css app.mjs model.mjs manifest.webmanifest icon.svg sw.js)
 
 tested_revision() {
-  local ref=$1 branch candidate
+  local ref=$1 branch candidate successful
   if [[ ${PAGES_TESTED_ONLY:-0} != 1 ]]; then
     git rev-parse --verify "$ref^{commit}"
     return
   fi
   branch=${ref#refs/remotes/origin/}
-  local successful
   successful=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs" \
-    -f branch="$branch" -f event=push -f status=success -F per_page=30 \
-    --jq '.workflow_runs[].head_sha')
+    -f branch="$branch" -F per_page=30 \
+    --jq '.workflow_runs[] | select(.event == "push" and .conclusion == "success") | .head_sha')
   while IFS= read -r candidate; do
     if [[ -n $candidate ]] && git merge-base --is-ancestor "$candidate" "$ref"; then
       printf '%s\n' "$candidate"
