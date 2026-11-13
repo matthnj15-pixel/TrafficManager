@@ -3,6 +3,9 @@ const revision = /* Pages revision */ "local-2";
 const cacheName = `${prefix}${revision}`;
 const files = ["./", "./index.html", "./styles.css", "./app.mjs", "./model.mjs", "./sumo-export.mjs", "./manifest.webmanifest", "./icon.svg"];
 
+files.push("./sumo-network.mjs", "./sumo-worker.mjs",
+  "./sumo-wasm/netconvert.mjs", "./sumo-wasm/netconvert.wasm", "./sumo-wasm/sumo.mjs", "./sumo-wasm/sumo.wasm");
+
 const shell = new Set(files.map(file => new URL(file, self.registration.scope).pathname));
 
 self.addEventListener("install", event => {

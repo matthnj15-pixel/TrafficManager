@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const url = "http://127.0.0.1:4183";
@@ -17,7 +17,7 @@ const waitForServer = async () => {
   throw new Error("Local test server did not start");
 };
 
-test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 45000 }, async () => {
+test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 75000 }, async () => {
   let browser;
   try {
     await waitForServer();
@@ -116,6 +116,38 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await (await downloaded).saveAs(requestPath);
         const result = spawnSync("python3", ["scripts/run-sumo.py", requestPath, resultsPath], { encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
+        if (process.env.TRAFFIC_TEST_WASM === "1") {
+          const request = JSON.parse(await readFile(requestPath, "utf8"));
+          const native = JSON.parse(await readFile(resultsPath, "utf8"));
+          const wasm = await page.evaluate(input => new Promise((resolve, reject) => {
+            const worker = new Worker("./sumo-worker.mjs", { type: "module" });
+            worker.onmessage = event => {
+              worker.terminate();
+              resolve(event.data);
+            };
+            worker.onerror = reject;
+            worker.postMessage(input);
+          }), request);
+          assert.equal(wasm.error, undefined);
+          for (const side of ["original", "edited"]) {
+            assert.deepEqual(wasm[side].results, native[side].results);
+            assert.equal(wasm[side].results.collisions, 0);
+            assert.equal(wasm[side].frames.length, native[side].frames.length);
+            for (const [index, frame] of wasm[side].frames.entries()) {
+              const { markers, ...stats } = frame;
+              const { markers: reference, ...nativeStats } = native[side].frames[index];
+              assert.deepEqual(stats, nativeStats);
+              assert.equal(markers.length, reference.length);
+              for (const [i, marker] of markers.entries()) {
+                const { x, y, angle, ...vehicle } = marker;
+                const { x: nx, y: ny, angle: na, ...nativeVehicle } = reference[i];
+                assert.deepEqual(vehicle, nativeVehicle);
+                assert.ok(Math.hypot(x - nx, y - ny) < .001 && Math.abs(angle - na) < .0001,
+                  `${side} frame ${index}, vehicle ${marker.id}: ${x},${y},${angle} vs ${nx},${ny},${na}`);
+              }
+            }
+          }
+        }
         const choosing = page.waitForEvent("filechooser");
         await click("Open SUMO results");
         await (await choosing).setFiles(resultsPath);
@@ -127,6 +159,15 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await click("Menu");
         await click("Use built-in engine");
         await page.getByText("Built-in engine", { exact: true }).waitFor();
+      }
+      if (process.env.TRAFFIC_TEST_WASM === "1") {
+        await click("Simulate");
+        await click("Run on-device SUMO");
+        await page.getByText("Eclipse SUMO · On-device run", { exact: true }).waitFor({ timeout: 20000 });
+        await click("Worst backup");
+        await page.screenshot({ path: `test-results/device-sumo-${viewport.width}.png` });
+        await click("Results");
+        assert.match(await page.locator("#inspector").textContent(), /Reported collisions/);
       }
       await click("Menu");
       await click("Restore original design");

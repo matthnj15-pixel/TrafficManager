@@ -48,3 +48,21 @@ npm run test:browser
 The model uses a fixed arrival schedule and 0.2-second steps. Browser tests use touch drags and browser clicks at 669 × 951 and 390 × 844, then reload the cached game offline and verify the saved design. The simulation is tuned for this corridor and uses a sampled minimum curve radius, a fixed signal plan, and simplified lane following, vehicle clearance, and zipper priority when both approaches queue. The longest queue measures stopped or near-stopped vehicles per lane, using vehicle lengths and nominal gaps. Results count unfinished trips explicitly.
 
 The hardware playtest question is whether you can make the intended edit on your first or second try, and whether you can see enough in replay to want to try another design.
+
+
+### On-device SUMO preview
+
+In Simulate, tap **Run on-device SUMO**. The app runs the original and edited
+layouts using Eclipse SUMO 1.28.0 inside a browser worker. After the first visit
+shows **Ready for offline play** in the menu, you can run new layouts offline.
+The engine adds about 21 MB of uncompressed assets to this preview.
+
+To build locally, put Emscripten 4.0.23, CMake 3.31 or later, and Ninja on your
+path and run `bash scripts/build-sumo-wasm.sh`, followed by `npm start`.
+The build script pins the SUMO and Xerces source versions and carries the small
+patches required for a static browser build. The output includes their license
+and notice files.
+
+With native SUMO 1.28.0 available, run
+`TRAFFIC_TEST_SUMO=1 TRAFFIC_TEST_WASM=1 npm run test:browser` to verify offline
+runs and compare WebAssembly results and vehicle trajectories with native SUMO.

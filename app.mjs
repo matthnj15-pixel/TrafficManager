@@ -34,6 +34,9 @@ let time = 0;
 let playing = false;
 let comparing = true;
 let sumoComparison;
+let sumoSource;
+let sumoWorker;
+let sumoMessage = "";
 let highlightQueues = false;
 let previousFrame = 0;
 let animationId;
@@ -231,7 +234,10 @@ function renderInspector() {
       <div class="row"><button id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
       <input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Simulation time">
       <span id="clock">${clock(time)}</span></div>
-      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>`;
+      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>
+      <div class="row spread simulation-footer"><button data-action="run-sumo" ${sumoWorker ? "disabled" : ""}>Run on-device SUMO</button>
+      <p id="device-sumo-status" role="status"></p></div>`;
+    $("#device-sumo-status").textContent = sumoMessage;
     updateSimulationReadout();
   } else {
     const a = original.results;
@@ -263,7 +269,7 @@ function render() {
 }
 
 function engineName() {
-  return sumoComparison ? "Eclipse SUMO · Imported run" : "Built-in engine";
+  return sumoComparison ? `Eclipse SUMO · ${sumoSource}` : "Built-in engine";
 }
 
 function updateSimulationReadout() {
@@ -415,6 +421,8 @@ document.addEventListener("click", event => {
     }
     draft = { ...design };
     render();
+  } else if (action === "run-sumo") {
+    runDeviceSumo();
   } else if (action === "compare") {
     comparing = !comparing;
     render();
@@ -458,7 +466,63 @@ function sumoStatus(message) {
   status.hidden = !message;
 }
 
+function showSumoComparison(comparison, source) {
+  sumoComparison = comparison;
+  sumoSource = source;
+  $("#use-built-in").hidden = false;
+  if (!$("#menu-panel").hidden) $("#menu").click();
+  time = 0;
+  comparing = true;
+  highlightQueues = false;
+  enterView("simulate");
+}
+
+function stopDeviceSumo() {
+  sumoWorker?.terminate();
+  sumoWorker = undefined;
+  sumoMessage = "";
+}
+
+function runDeviceSumo() {
+  if (sumoWorker) return;
+  const runDesign = design;
+  const fail = message => {
+    stopDeviceSumo();
+    sumoMessage = message;
+    if (view === "simulate") renderInspector();
+  };
+  try {
+    const worker = new Worker(new URL("./sumo-worker.mjs", import.meta.url), { type: "module" });
+    sumoWorker = worker;
+    sumoMessage = "Simulating both designs…";
+    worker.onerror = () => fail("Could not load on-device SUMO.");
+    worker.onmessage = ({ data }) => {
+      if (sumoWorker !== worker) return;
+      try {
+        if (data.error) throw new Error(data.error);
+        const comparison = readSumoComparison(data, runDesign);
+        stopDeviceSumo();
+        if (view !== "design") showSumoComparison(comparison, "On-device run");
+        else {
+          sumoComparison = comparison;
+          sumoSource = "On-device run";
+          $("#use-built-in").hidden = false;
+        }
+      } catch (error) {
+        console.warn("On-device SUMO failed", error);
+        fail("On-device SUMO could not finish this design.");
+      }
+    };
+    worker.postMessage(sumoRequest(runDesign));
+    renderInspector();
+  } catch (error) {
+    console.warn("On-device SUMO failed", error);
+    fail("Could not start on-device SUMO.");
+  }
+}
+
 function useBuiltIn() {
+  stopDeviceSumo();
   sumoComparison = undefined;
   $("#use-built-in").hidden = true;
   sumoStatus("");
@@ -504,14 +568,10 @@ $("#sumo-file").addEventListener("change", async event => {
     if (file.size > 32 * 1024 * 1024) throw new Error("Choose a SUMO results file smaller than 32 MB.");
     const payload = JSON.parse(await file.text());
     if (changed()) throw new Error("Apply or cancel your draft before importing.");
-    sumoComparison = readSumoComparison(payload, design);
+    const comparison = readSumoComparison(payload, design);
+    stopDeviceSumo();
     sumoStatus("SUMO comparison loaded for this session.");
-    $("#use-built-in").hidden = false;
-    if (!$("#menu-panel").hidden) $("#menu").click();
-    time = 0;
-    comparing = true;
-    highlightQueues = false;
-    enterView("simulate");
+    showSumoComparison(comparison, "Imported run");
   } catch (error) {
     sumoStatus(error instanceof SyntaxError ? "Choose a valid SUMO results JSON file." : error.message);
   }
