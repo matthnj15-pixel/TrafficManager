@@ -100,3 +100,13 @@ button { touch-action: manipulation; }
 .junction-pin { fill: #0f4b70; stroke: #c4f8ff; stroke-width: 2.5; }
 .junction-node[aria-pressed="true"] .junction-pin { fill: #c4f8ff; stroke: #0f4b70; }
 .junction-node:focus-visible .junction-pin { stroke: #ffc578; stroke-width: 3; }
+
+.road-target, [data-road-segment] { cursor: pointer; }
+.road-target:focus-visible circle:last-of-type, [data-road-segment]:focus-visible circle { stroke: #ffc578; stroke-width: 3; }
+.road-counts { flex-wrap: wrap; justify-content: space-between; }
+.road-count { display: flex; align-items: center; gap: 5px; }
+.road-count button { min-width: 40px; padding: 0; }
+.road-presets { margin-bottom: 4px; }
+
+.inspector .road-presets button, .inspector .road-actions button { padding-inline: 8px; }
+.road-presets { gap: 5px; }

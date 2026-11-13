@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { baseline, duration, step, world } from "../model.mjs";
+import { avenueSegments, baseline, duration, step, world } from "../model.mjs";
 import { sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
 
@@ -89,4 +89,20 @@ test("the drawn slip lane serves eastbound traffic when the signal turn is banne
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("rebuilt segments export asymmetric lanes and connect both slips to lane three", () => {
+  const geometry = { ...baseline, slipStart: 220, slipEnd: 378 };
+  const road = avenueSegments(geometry).map(segment => segment.top === 220
+    ? { ...segment, north: 4, south: 1, bend: 8 } : segment);
+  const request = sumoRequest({ ...geometry, road, slipLane: 3, pickupLane: 3 });
+  const files = sumoInputs(request, request.edited);
+  assert.match(files["edges.xml"], /id="road-n-220-310"[^>]*numLanes="4"/);
+  assert.match(files["edges.xml"], /id="road-s-220-310"[^>]*numLanes="1"/);
+  assert.match(files["connections.xml"], /from="pickup-road" to="road-n-220-310" fromLane="0" toLane="1"/);
+  assert.match(files["connections.xml"], /from="road-n-220-310" to="slip-road" fromLane="1" toLane="0"/);
+  assert.ok(request.trips.some(trip => trip.origin === "southbound"));
+  const cleared = sumoInputs(request, { ...request.edited, design: { ...request.edited.design, road: [] } });
+  assert.doesNotMatch(cleared["routes.xml"], /route="(?:southbound|outer|direct)/);
+  assert.match(cleared["routes.xml"], /route="cross"/);
 });

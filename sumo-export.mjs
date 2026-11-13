@@ -26,11 +26,16 @@ export function sumoRequest(design) {
       })
     };
   };
+  const trips = arrivals();
+  if (design.road != null) {
+    for (let i = 0; i < 12; i++) trips.push({ id: trips.length, time: 6 + i * 14, kind: "car", origin: "southbound" });
+    trips.sort((a, b) => a.time - b.time);
+  }
   return {
     schema: "traffic-manager.sumo-request.v2", world, scale, step, duration,
     signalCycle,
     types: { car: vehicleDimensions("car"), bus: vehicleDimensions("bus"), pickup: vehicleDimensions("pickup") },
-    trips: arrivals(),
+    trips,
     original: layout(baseline), edited: layout(design)
   };
 }
@@ -40,7 +45,7 @@ export function readSumoComparison(data, design) {
     throw new Error("SUMO returned an invalid comparison.");
   }
   const keys = Object.keys(baseline);
-  const matches = (a, b) => a && keys.every(key => a[key] === b[key]);
+  const matches = (a, b) => a && keys.every(key => JSON.stringify(a[key]) === JSON.stringify(b[key]));
   if (!matches(data.original?.design, baseline) || !matches(data.edited?.design, normalizeDesign(design))) {
     throw new Error("SUMO returned results for a different road design.");
   }
@@ -53,7 +58,7 @@ export function readSumoComparison(data, design) {
       !Number.isInteger(run.results.peakFrame) || run.results.peakFrame > duration / step ||
       !Array.isArray(run.frames) || run.frames.length !== duration / step + 1 ||
       !run.frames.every(frame => frame && ["avenue", "avenue-yellow", "cross", "cross-yellow", "all-red"].includes(frame.phase) && typeof frame.queueZone === "string" && nonnegative(frame.finished) &&
-        nonnegative(frame.longestQueue) && Array.isArray(frame.markers) && frame.markers.length <= 116 &&
+        nonnegative(frame.longestQueue) && Array.isArray(frame.markers) && frame.markers.length <= 128 &&
         frame.markers.every(validMarker))) {
       throw new Error("SUMO returned incomplete results.");
     }

@@ -1,3 +1,5 @@
+import { avenueLanePath, avenueLaneX, avenuePieces, selectedLane } from "./model.mjs";
+
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
 export const yellow = 3;
@@ -23,24 +25,23 @@ export function sumoInputs(request, layout) {
   const { design, curves, taper } = layout;
   const main = design.lanes & 1;
   const auxiliary = design.lanes & 2;
-  const nodes = [], edges = [], connections = [], routes = [];
+  const nodes = [], edges = [], connections = [], prohibitions = [], routes = [];
   const element = (tag, attributes) => `<${tag} ${Object.entries(attributes).map(([key, value]) => `${key}="${value}"`).join(" ")}/>`;
   const wrap = (tag, items) => `<${tag}>\n${items.join("\n")}\n</${tag}>\n`;
   const node = (id, x, y, type = "priority") =>
     nodes.push(element("node", { id, x: x * scale, y: -y * scale, type, radius: .5 }));
-  const edge = (id, from, to, points, speed = 14, priority = 2) => {
-    const shape = points.map(([x, y]) => `${(x * scale).toFixed(4)},${(-y * scale).toFixed(4)}`).join(" ");
-    edges.push(element("edge", { id, from, to, shape, speed, priority, spreadType: "center", numLanes: 1 }));
-  };
+  const shape = points => points.map(([x, y]) => `${(x * scale).toFixed(4)},${(-y * scale).toFixed(4)}`).join(" ");
+  const edge = (id, from, to, points, speed = 14, priority = 2) =>
+    edges.push({ id, from, to, points, speed, priority, laneShapes: [points] });
   const connect = (from, to, options = {}) =>
-    connections.push(element("connection", { from, to, fromLane: 0, toLane: 0, ...options }));
+    connections.push({ from, to, fromLane: 0, toLane: 0, ...options });
   const { outer, inner, south, signal, north } = world;
   const { node: join, mergeEnd: end, slipStart, slipEnd } = design;
   const approachEnd = auxiliary ? "taper" : slipStart ? "slip-fork" : "signal";
   const afterTaper = slipStart ? "slip-fork" : "signal";
   const beforeFork = auxiliary ? "downstream" : "approach";
   const signalIn = slipStart ? "signal-in" : beforeFork;
-  const prohibit = (prohibitor, prohibited) => connections.push(element("prohibition", { prohibitor, prohibited }));
+  const prohibit = (prohibitor, prohibited) => prohibitions.push({ prohibitor, prohibited });
   node("south", outer, south, "dead_end");
   node("inner-south", inner, south, "dead_end");
   node("inner-north", inner, north, "dead_end");
@@ -48,7 +49,7 @@ export function sumoInputs(request, layout) {
   node("signal", outer, signal, "traffic_light");
   node("cross-west", 40, signal, "dead_end");
   node("cross-east", 488, signal, "dead_end");
-  node("join", outer, join, main && !design.pickupYield ? "zipper" : "priority");
+  node("join", outer, join, design.road == null && main && !design.pickupYield ? "zipper" : "priority");
   node("pickup", ...curves[0].points[0], "dead_end");
   if (design.schoolRight) {
     const schoolY = layout.schoolEntry[0][1];
@@ -95,7 +96,7 @@ export function sumoInputs(request, layout) {
     if (design.pickupYield) prohibit("avenue->approach", "pickup-road->approach");
   }
   if (auxiliary) {
-    node("taper", outer, end, design.taperYield ? "priority" : "zipper");
+    node("taper", outer, end, design.taperYield || design.road != null ? "priority" : "zipper");
     edge("merge-lane", "join", "taper", [[world.auxiliary, join], ...taper], layout.taperSpeed, design.taperYield ? 1 : 2);
     edge("downstream", "taper", afterTaper, [[outer, end], [outer, slipStart || signal]]);
     connect("pickup-road", "merge-lane");
@@ -111,8 +112,134 @@ export function sumoInputs(request, layout) {
   const east = slipStart ? "cross-out east-exit" : "cross-out";
   const beforeSignal = auxiliary ? "approach downstream" : "approach";
   const toSignal = slipStart ? beforeSignal + " signal-in" : beforeSignal;
-  const route = (id, edges) => routes.push(element("route", { id, edges }));
-  route("inner", "inner inner-exit");
+  const custom = design.road != null;
+  const trunkIds = new Set(["avenue-south", "avenue", "approach", "downstream", "signal-in", "exit"]);
+  const replacements = new Map();
+  const segmentNodes = new Set();
+  if (custom) {
+    const pieces = avenuePieces(design);
+    for (const original of edges.filter(item => trunkIds.has(item.id))) {
+      const bottom = original.points[0][1], top = original.points.at(-1)[1];
+      const list = pieces.filter(piece => piece.top >= top && piece.bottom <= bottom && piece.north)
+        .sort((a, b) => b.bottom - a.bottom);
+      // Only contiguous segments can carry traffic between the existing junctions.
+      const continuous = list[0]?.bottom === bottom && list.at(-1)?.top === top &&
+        list.every((piece, i) => i === 0 || list[i - 1].top === piece.bottom);
+      const boundary = y => {
+        if (y === bottom) return original.from;
+        if (y === top) return original.to;
+        const id = `road-node-${y}`;
+        if (!segmentNodes.has(id)) {
+          node(id, outer, y);
+          segmentNodes.add(id);
+        }
+        return id;
+      };
+      const parts = list.map(piece => {
+        const id = `road-n-${piece.top}-${piece.bottom}`;
+        const laneGeometry = Array.from({ length: piece.north }, (_, index) =>
+          avenueLanePath(piece, avenueLaneX("north", piece.north - index)));
+        return { ...original, id, from: boundary(piece.bottom), to: boundary(piece.top),
+          speed: Math.min(...laneGeometry.map(lane => lane.speed)),
+          laneShapes: laneGeometry.map(lane => lane.samples.map(({ x, y }) => [x, y])) };
+      });
+      replacements.set(original.id, { parts, continuous, bottom, top, list });
+    }
+    const ends = (id, end) => {
+      const replacement = replacements.get(id);
+      if (!replacement) return { id, count: 1 };
+      const first = end === "start";
+      const part = first ? replacement.parts[0] : replacement.parts.at(-1);
+      if ((first ? replacement.list[0]?.bottom : replacement.list.at(-1)?.top) !==
+          (first ? replacement.bottom : replacement.top)) return undefined;
+      return { id: part.id, count: part.laneShapes.length };
+    };
+    const link = (from, to, options) => {
+      for (let lane = 1; lane <= from.count; lane++) {
+        connect(from.id, to.id, { ...options, fromLane: from.count - lane,
+          toLane: Math.max(0, to.count - lane) });
+      }
+    };
+    const originalConnections = connections.splice(0);
+    for (const { from, to, ...options } of originalConnections) {
+      if (from === "inner") continue;
+      const start = ends(from, "end"), end = ends(to, "start");
+      if (!start || !end) continue;
+      if (to === "slip-road") connect(start.id, end.id, { fromLane: start.count - selectedLane(design, "slip") });
+      else if (from === "pickup-road" && to === "approach") {
+        connect(start.id, end.id, { ...options, toLane: end.count - selectedLane(design, "pickup") });
+      } else if (to === "cross-out" || to === "school-in") connect(start.id, end.id);
+      else link(start, end, options);
+    }
+    for (const { parts } of replacements.values()) {
+      for (let i = 1; i < parts.length; i++) {
+        const before = parts[i - 1], after = parts[i];
+        if (before.to === after.from) link({ id: before.id, count: before.laneShapes.length },
+          { id: after.id, count: after.laneShapes.length });
+      }
+    }
+    for (let i = prohibitions.length - 1; i >= 0; i--) {
+      const updated = {};
+      for (const [key, movement] of Object.entries(prohibitions[i])) {
+        const [from, to] = movement.split("->");
+        const start = ends(from, "end"), end = ends(to, "start");
+        if (start && end) updated[key] = `${start.id}->${end.id}`;
+      }
+      if (Object.keys(updated).length === 2) prohibitions[i] = updated;
+      else prohibitions.splice(i, 1);
+    }
+    for (let i = edges.length - 1; i >= 0; i--) {
+      if (replacements.has(edges[i].id)) edges.splice(i, 1, ...replacements.get(edges[i].id).parts);
+      else if (["inner", "inner-exit"].includes(edges[i].id)) edges.splice(i, 1);
+    }
+  }
+
+  const availableRoutes = new Set();
+  if (request.trips.some(trip => trip.origin === "southbound")) {
+    const pieces = custom ? avenuePieces(design).filter(piece => piece.south) :
+      [{ top: north, bottom: signal, south: 1, bend: 0 }, { top: signal, bottom: south, south: 1, bend: 0 }];
+    const southNode = y => {
+      if (y === signal) return "signal";
+      const id = `southbound-${y}`;
+      if (!segmentNodes.has(id)) {
+        node(id, avenueLaneX("south", 1), y, y === north || y === south ? "dead_end" : "priority");
+        segmentNodes.add(id);
+      }
+      return id;
+    };
+    const southEdges = pieces.map(piece => {
+      const laneGeometry = Array.from({ length: piece.south }, (_, index) =>
+        avenueLanePath(piece, avenueLaneX("south", piece.south - index), false));
+      return { id: `road-s-${piece.top}-${piece.bottom}`, from: southNode(piece.top), to: southNode(piece.bottom),
+        points: laneGeometry[0].samples.map(({ x, y }) => [x, y]), priority: 2,
+        speed: Math.min(...laneGeometry.map(lane => lane.speed)),
+        laneShapes: laneGeometry.map(lane => lane.samples.map(({ x, y }) => [x, y])) };
+    });
+    edges.push(...southEdges);
+    for (let i = 1; i < southEdges.length; i++) {
+      const before = southEdges[i - 1], after = southEdges[i];
+      if (before.to !== after.from) continue;
+      for (let lane = 1; lane <= before.laneShapes.length; lane++) {
+        connect(before.id, after.id, { fromLane: before.laneShapes.length - lane,
+          toLane: Math.max(0, after.laneShapes.length - lane) });
+      }
+    }
+    if (southEdges[0]?.from === `southbound-${north}` && southEdges.at(-1)?.to === `southbound-${south}` &&
+      southEdges.every((edge, i) => i === 0 || southEdges[i - 1].to === edge.from)) {
+      availableRoutes.add("southbound");
+      routes.push(element("route", { id: "southbound", edges: southEdges.map(edge => edge.id).join(" ") }));
+    }
+  }
+
+  const route = (id, path) => {
+    const ids = path.trim().split(/\s+/);
+    if (ids.some(edge => replacements.has(edge) && !replacements.get(edge).continuous)) return;
+    const expanded = ids.flatMap(edge => replacements.has(edge) ? replacements.get(edge).parts.map(part => part.id) : edge);
+    if (expanded.some((edge, i) => i && !connections.some(link => link.from === expanded[i - 1] && link.to === edge))) return;
+    routes.push(element("route", { id, edges: expanded.join(" ") }));
+    availableRoutes.add(id);
+  };
+  if (!custom) route("inner", "inner inner-exit");
   route("cross", "cross-in " + east);
   if (design.schoolRight) route("school", "avenue-south school-in");
   const prefixes = { outer: design.schoolRight ? "avenue-south avenue " : "avenue ", ...(main ? { direct: "pickup-road " } : {}), ...(auxiliary ? { merge: "pickup-road " } : {}) };
@@ -123,23 +250,36 @@ export function sumoInputs(request, layout) {
     if (design.signalRight) route(name + "-right", prefix + inbound + " " + east);
     if (slipStart) route(name + "-slip", prefix + trunk + " slip-road east-exit");
   }
+
   for (const trip of request.trips) {
     const direct = main && (!auxiliary || trip.pickupIndex % 2 === 0);
-    let route = trip.origin === "ramp" ? (direct ? "direct" : "merge") : trip.origin;
+    let route = trip.origin === "ramp" ? (direct ? "direct" : "merge") : custom && trip.origin === "inner" ? "outer" : trip.origin;
     if (trip.destination === "school") {
       if (!design.schoolRight) continue;
       route = "school";
     }
     if (trip.destination === "east") {
-      if (slipStart && (!design.signalRight || trip.id % 2 === 0)) route += "-slip";
-      else if (design.signalRight) route += "-right";
+      const viaSlip = route + "-slip", viaSignal = route + "-right";
+      const slipAvailable = availableRoutes.has(viaSlip);
+      const signalAvailable = availableRoutes.has(viaSignal);
+      if (slipAvailable && (!signalAvailable || trip.id % 2 === 0)) route = viaSlip;
+      else if (signalAvailable) route = viaSignal;
       else continue;
     }
-    routes.push(element("vehicle", { id: trip.id, type: trip.kind, route, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base" }));
+    if (!availableRoutes.has(route)) continue;
+    routes.push(element("vehicle", { id: trip.id, type: trip.kind, route, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base",
+      ...((custom && route === "outer") || route === "southbound" ? { departLane: "best" } : {}) }));
   }
   return {
-    "nodes.xml": wrap("nodes", nodes), "edges.xml": wrap("edges", edges),
-    "connections.xml": wrap("connections", connections), "routes.xml": wrap("routes", routes)
+    "nodes.xml": wrap("nodes", nodes), "edges.xml": wrap("edges", edges.map(({ points, laneShapes, ...edge }) => {
+      const attrs = { ...edge, shape: shape(points), spreadType: "center", numLanes: laneShapes.length };
+      if (!edge.id.startsWith("road-")) return element("edge", attrs);
+      return `<edge ${Object.entries(attrs).map(([key, value]) => `${key}="${value}"`).join(" ")}>${
+        laneShapes.map((points, index) => element("lane", { index, shape: shape(points) })).join("")}</edge>`;
+    })),
+    "connections.xml": wrap("connections", [
+      ...connections.map(link => element("connection", link)), ...prohibitions.map(rule => element("prohibition", rule))
+    ]), "routes.xml": wrap("routes", routes)
   };
 }
 
@@ -152,7 +292,8 @@ export function configureSignal(network, green, cycle) {
   // Netconvert assigns indices by junction geometry. Read them before setting phases.
   const links = [...network.matchAll(/<connection\s[^>]*>/g)].map(([tag]) => attributes(tag))
     .filter(link => link.tl === "signal").sort((a, b) => a.linkIndex - b.linkIndex);
-  if (links.length < 3 || links.length > 4 || links.filter(link => link.from === "cross-in").length !== 1 ||
+  if (!links.length) return network;
+  if (links.filter(link => link.from === "cross-in").length !== 1 ||
       links.some((link, i) => Number(link.linkIndex) !== i)) throw new Error("Unexpected SUMO signal movements.");
   const state = (road, color) => links.map(link => (link.from === "cross-in") === (road === "cross") ? color : "r").join("");
   const phases = [
@@ -179,6 +320,11 @@ export function sumoArgs({ duration, step }) {
 
 // These are controlled SUMO XML outputs. Read only the numeric attributes
 // and identifiers needed by the comparison, including inside a worker.
+function queueZoneFor(lane) {
+  if (lane.startsWith("road-")) return "Alder Avenue";
+  return queueZones[lane.replace(/_\d+$/, "")] ?? "Junction";
+}
+
 function attributes(tag) {
   return Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, key, value]) => [key, value]));
 }
@@ -208,7 +354,7 @@ export function sumoResult(request, layout, trace, trips, collisions) {
       const speed = Number(car.speed);
       const reason = speed < 2.2 ? "Queued" : "";
       if (car.lane === "slip-road_0") slipTrips.add(Number(car.id));
-      const zone = queueZones[car.lane.replace(/_0$/, "")] ?? "Junction";
+      const zone = queueZoneFor(car.lane);
       if (reason) queues.set(car.lane, (queues.get(car.lane) ?? 0) + length + 2);
       markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, angle: +angle.toFixed(5),
         x: +((Number(car.x) - Math.cos(angle) * length / 2) / request.scale).toFixed(4),
@@ -218,7 +364,7 @@ export function sumoResult(request, layout, trace, trips, collisions) {
     for (const [lane, length] of queues) {
       if (length <= queue) continue;
       queue = length;
-      queueZone = queueZones[lane.replace(/_0$/, "")] ?? "Junction";
+      queueZone = queueZoneFor(lane);
     }
     if (queue > longestQueue) {
       longestQueue = queue;
@@ -230,6 +376,5 @@ export function sumoResult(request, layout, trace, trips, collisions) {
   return { design: layout.design, frames, results: { finished, waiting: request.trips.length - finished,
     longestQueue, peakFrame, busDelay, crossDelay,
     slipFinished: reports.filter(report => Number(report.arrival) >= 0 && slipTrips.has(Number(report.id))).length,
-    unserved: request.trips.filter(trip => trip.destination === "school" && !layout.design.schoolRight ||
-      trip.destination === "east" && !layout.design.signalRight && !layout.design.slipStart).length, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"), collisions: [...collisions.matchAll(/<collision\s/g)].length } };
+    unserved: request.trips.length - [...sumoInputs(request, layout)["routes.xml"].matchAll(/<vehicle /g)].length, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"), collisions: [...collisions.matchAll(/<collision\s/g)].length } };
 }

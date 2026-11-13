@@ -18,7 +18,7 @@ const waitForServer = async () => {
   throw new Error("Local test server did not start");
 };
 
-test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 75000 }, async () => {
+test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 105000 }, async () => {
   let browser;
   try {
     await waitForServer();
@@ -223,6 +223,40 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       await click("Results");
       await page.locator(".metrics").waitFor({ timeout: 20000 });
       assert.equal(await page.locator(".metrics .gain, .metrics .loss").count(), 0);
+      if (viewport.width === 390) {
+        await click("Design");
+        await click("Road Builder");
+        await click("Clear avenue");
+        assert.equal(await page.locator("[data-road-segment]").count(), 0);
+        const terminal = async name => {
+          const box = await page.getByRole("button", { name, exact: true }).boundingBox();
+          return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+        };
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [await terminal("South connection")] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [await terminal("North connection")] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await click("2 lanes ↕");
+        await click("Add node");
+        const full = page.getByRole("button", { name: "Segment 90 to 590" });
+        await full.press("Enter");
+        assert.equal(await page.locator("[data-road-segment]").count(), 2);
+        await click("3 lanes ↕");
+        await click("Add northbound lane");
+        await click("Increase northbound lanes");
+        await page.getByRole("slider", { name: "Curve" }).press("ArrowRight");
+        await page.screenshot({ path: "test-results/road-builder-390.png" });
+        await click("Apply");
+        const design = await page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+        assert.equal(design.road[0].north, 1);
+        assert.equal(design.road[1].north, 4);
+        assert.equal(design.road[1].south, 1);
+        assert.equal(design.road[1].bend, 1);
+        await click("Test design");
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+        await page.reload();
+        await click("Road Builder");
+        assert.equal(await page.locator("[data-road-segment]").count(), 2);
+      }
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight ||
         document.documentElement.scrollWidth > innerWidth), false);
