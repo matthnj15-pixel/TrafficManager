@@ -1,4 +1,4 @@
-export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21 });
+export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, signalRight: true, schoolRight: true });
 export const world = Object.freeze({
   start: { x: 448, y: 440 }, inner: 261, outer: 280, auxiliary: 302,
   signal: 180, south: 590, north: 90
@@ -11,8 +11,8 @@ export const scale = 0.8; // Metres per map unit.
 const lateralAcceleration = 1.5;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
-export function mergeEndBounds(node) {
-  return [world.signal + 22, node - 54];
+export function mergeEndBounds(node, slipStart = 0) {
+  return [Math.max(world.signal + 22, slipStart + 8), node - 54];
 }
 
 export function validate(design) {
@@ -21,10 +21,15 @@ export function validate(design) {
     Number.isFinite(design.entry) && design.entry >= 25 && design.entry <= 125 &&
     Number.isFinite(design.exit) && design.exit >= 20 && design.exit <= 125 &&
     [1, 2, 3].includes(design.lanes) &&
+    ["slipYield", "pickupYield", "signalRight", "schoolRight"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
+    (design.slipBend === undefined || Number.isInteger(design.slipBend) && design.slipBend >= 16 && design.slipBend <= 70) &&
+    ((design.slipStart ?? 0) === 0 && (design.slipEnd ?? 0) === 0 ||
+      Number.isInteger(design.slipStart) && design.slipStart >= 205 && design.slipStart <= slipStartMax(design) &&
+      Number.isInteger(design.slipEnd) && design.slipEnd >= 348 && design.slipEnd <= 430) &&
     (design.green === undefined || Number.isInteger(design.green) && design.green >= greenBounds[0] && design.green <= greenBounds[1]) &&
     (design.taperLength === undefined || Number.isInteger(design.taperLength) && design.taperLength >= 24 && design.taperLength <= taperLengthBounds(design)[1]) &&
     (design.mergeEnd === undefined || (Number.isFinite(design.mergeEnd) &&
-      design.mergeEnd >= mergeEndBounds(design.node)[0] && design.mergeEnd <= mergeEndBounds(design.node)[1]));
+      design.mergeEnd >= mergeEndBounds(design.node, design.lanes & 2 ? design.slipStart : 0)[0] && design.mergeEnd <= mergeEndBounds(design.node)[1]));
 }
 
 export function taperLengthBounds(design) {
@@ -70,6 +75,10 @@ export function curve(design, lane = 1) {
   const end = { x: lane === 1 ? world.outer : world.auxiliary, y: design.node };
   const a = { x: start.x - design.entry, y: start.y };
   const b = { x: end.x, y: Math.min(start.y, end.y + design.exit) };
+  return cubic(start, a, b, end);
+}
+
+function cubic(start, a, b, end) {
   const samples = [];
   let length = 0;
   let radius = Infinity;
@@ -93,6 +102,25 @@ export function curve(design, lane = 1) {
     path: `M ${start.x} ${start.y} C ${a.x} ${a.y} ${b.x} ${b.y} ${end.x} ${end.y}` };
 }
 
+export function slipStartMax(design) {
+  return design.lanes & 2 ? (design.mergeEnd ?? baseline.mergeEnd) - 8 : Math.min(265, design.node - 12);
+}
+
+export function slipGeometry(design) {
+  const start = { x: world.outer, y: design.slipStart };
+  const end = { x: design.slipEnd, y: world.signal };
+  const a = { x: start.x, y: start.y - (start.y - end.y) * .65 };
+  const b = { x: end.x - design.slipBend, y: end.y };
+  return cubic(start, a, b, end);
+}
+
+export function schoolEntry() {
+  const start = { x: world.outer, y: world.start.y + 58 };
+  const end = { x: world.start.x, y: world.start.y + 17 };
+  return cubic(start, { x: start.x, y: start.y - 28 },
+    { x: end.x - 95, y: end.y }, end);
+}
+
 export function pointOnCurve(geometry, distance) {
   const points = geometry.samples;
   let low = 0;
@@ -111,10 +139,11 @@ export function pointOnCurve(geometry, distance) {
 export function arrivals() {
   const trips = [];
   for (let i = 0; i < 48; i++) {
-    trips.push({ time: 1 + i * 4.0 + (i % 3) * 0.28, kind: i % 12 === 5 ? "bus" : "car", origin: i % 4 === 0 ? "inner" : "outer" });
+    trips.push({ time: 1 + i * 4.0 + (i % 3) * 0.28, kind: i % 12 === 5 ? "bus" : "car", origin: i % 4 === 0 ? "inner" : "outer",
+      destination: i % 12 === 2 ? "school" : i % 12 === 6 || i % 12 === 9 ? "east" : "north" });
   }
   for (let i = 0; i < 40; i++) {
-    trips.push({ time: 12 + i * 3.85 + (i % 4) * 0.21, kind: "pickup", origin: "ramp", pickupIndex: i });
+    trips.push({ time: 12 + i * 3.85 + (i % 4) * 0.21, kind: "pickup", origin: "ramp", pickupIndex: i, destination: i % 3 === 0 ? "east" : "north" });
   }
   for (let i = 0; i < 28; i++) {
     trips.push({ time: 3 + i * 6.2 + (i % 3) * .37, kind: "car", origin: "cross" });
@@ -128,6 +157,10 @@ export function normalizeDesign(design) {
     node: design.node, entry: design.entry, exit: Math.min(design.exit, world.start.y - design.node),
     lanes: design.lanes, mergeEnd,
     taperLength: Math.min(design.taperLength ?? baseline.taperLength, taperLengthBounds({ ...design, mergeEnd })[1]),
-    green: design.green ?? baseline.green
+    green: design.green ?? baseline.green,
+    slipStart: design.slipStart ?? 0, slipEnd: design.slipEnd ?? 0,
+    slipBend: design.slipBend ?? baseline.slipBend,
+    slipYield: design.slipYield ?? baseline.slipYield, pickupYield: design.pickupYield ?? baseline.pickupYield,
+    signalRight: design.signalRight ?? baseline.signalRight, schoolRight: design.schoolRight ?? baseline.schoolRight
   };
 }

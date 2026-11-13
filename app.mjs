@@ -1,6 +1,6 @@
 import { readSumoComparison, sumoRequest } from "./sumo-export.mjs";
 import { clearance } from "./sumo-network.mjs";
-import { baseline, world, curve, duration, step, validate, greenBounds, mergeEndBounds, mergeTaper, normalizeDesign, replayMarkers, scale, signalCycle, taperLengthBounds, vehicleDimensions } from "./model.mjs";
+import { baseline, world, curve, duration, step, validate, greenBounds, mergeEndBounds, mergeTaper, normalizeDesign, replayMarkers, scale, schoolEntry, signalCycle, slipGeometry, slipStartMax, taperLengthBounds, vehicleDimensions } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
 const map = $("#map");
@@ -15,6 +15,7 @@ const history = [];
 const icons = {
   move: '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3"/>',
   curve: '<path d="M5 18C15 18 8 6 19 6"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>',
+  junction: '<path d="M5 22V2m-3 3 3-3 3 3m-3 13c5 0 4-10 16-10m-3-3 3 3-3 3"/>',
   signal: '<rect x="6" y="2" width="12" height="20" rx="4"/><circle cx="12" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="17" r="1"/>',
   lanes: '<path d="M6 21V4m-3 3 3-3 3 3m4 14v-7q0-7 8-7m-3-3 3 3-3 3"/>',
   design: '<path d="m3 9 9-5 9 5-9 5zm0 4 9 5 9-5M3 17l9 5 9-5"/>',
@@ -32,6 +33,7 @@ let view = "design";
 let tool = "move";
 let laneSelected = false;
 let drag;
+let slipAnchor;
 let currentRun;
 let time = 0;
 let playing = false;
@@ -93,7 +95,10 @@ const avenue = `
   <path d="M244 474l4-8h-8zm17-61 4 8h-8zm19 0 4 8h-8z" fill="#e6e9e5" opacity=".75"/>`;
 
 function handleBounds(key) {
-  if (key === "mergeEnd") return mergeEndBounds(draft.node);
+  if (key === "mergeEnd") return mergeEndBounds(draft.node, draft.lanes & 2 ? draft.slipStart : 0);
+  if (key === "slipStart") return [205, slipStartMax(draft)];
+  if (key === "slipEnd") return [348, 430];
+  if (key === "slipBend") return [16, 70];
   if (key === "taperLength") return taperLengthBounds(draft);
   if (key === "node") return [275, 375];
   return key === "entry" ? [25, 125] : [20, Math.min(125, world.start.y - draft.node)];
@@ -105,6 +110,7 @@ function updateHandle(key, value) {
     draft.mergeEnd = clamp(draft.mergeEnd, ...mergeEndBounds(draft.node));
     draft.exit = clamp(draft.exit, ...handleBounds("exit"));
   }
+  if (draft.slipStart) draft.slipStart = Math.min(draft.slipStart, slipStartMax(draft));
   draft.taperLength = clamp(draft.taperLength, ...taperLengthBounds(draft));
 }
 
@@ -113,7 +119,7 @@ function mergeLength(config) {
 }
 
 function handle(kind, x, y, selected = true) {
-  const names = { node: "Merge node", mergeEnd: "Merge lane end", taperLength: "Taper start", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
+  const names = { node: "Merge node", slipStart: "Slip lane start", slipEnd: "Slip lane end", slipBend: "Slip lane bend", mergeEnd: "Merge lane end", taperLength: "Taper start", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
   const lane = ["source", "outer", "auxiliary"].includes(kind);
   return `<g class="map-handle" data-handle="${kind}" transform="translate(${x} ${y})"
     role="${lane ? "button" : "slider"}" tabindex="0" aria-label="${names[kind]}"
@@ -143,6 +149,20 @@ function mapMarkup(config, run, editing) {
   if (main && aux) {
     content += `<path d="${secondary.path}" fill="none" stroke="#46525b" stroke-width="17"/>`;
   }
+  const school = schoolEntry();
+  content += `<path d="${school.path}" fill="none" stroke="#46525b" stroke-width="10"
+    ${config.schoolRight ? "" : 'opacity=".35" stroke-dasharray="4 3"'}/>`;
+  if (config.slipStart) {
+    const slip = slipGeometry(config);
+    content += `<path d="${slip.path}" fill="none" stroke="#e9e7d8" stroke-width="15"/>
+      <path d="${slip.path}" fill="none" stroke="#46525b" stroke-width="11"/>`;
+    content += yieldSign(config.slipEnd - 16, config.slipYield ? world.signal + 23 : world.signal - 16);
+  }
+  if (config.pickupYield && main) content += yieldSign(selectedGeometry.end.x + 17, config.node + 17);
+  if (config.pickupYield && aux) content += yieldSign(world.auxiliary + 13, taper.end + 14);
+  if (!config.signalRight) content += turnBan(world.outer + 14, world.signal + 23);
+  if (!config.schoolRight) content += turnBan(world.outer + 15, school.start.y + 5);
+  if (editing && tool === "junction") content += junctionHandles(config);
   const phase = frame?.phase ?? "all-red";
   const light = (road, x, y) => {
     const color = phase === road ? "#9ee6a2" : phase === road + "-yellow" ? "#ffca74" : "#ff987d";
@@ -174,7 +194,7 @@ function mapMarkup(config, run, editing) {
         <path d="${old.path}" fill="none" stroke="#fbfffc" opacity=".7" stroke-dasharray="4 4"/>
         <path d="${path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>` + handle("node", end.x, end.y);
       if (aux) {
-        const [min, max] = mergeEndBounds(config.node);
+        const [min, max] = mergeEndBounds(config.node, config.slipStart);
         content += `<path d="M${world.outer} ${min}V${max}" fill="none" stroke="#c4f8ff" opacity=".55" stroke-dasharray="3 4"/>
           <path d="${taper.path}" fill="none" stroke="#c4f8ff" stroke-width="2" stroke-dasharray="7 4"/>`
           + handle("mergeEnd", world.outer, taper.end) + `<path d="M${world.auxiliary} ${taper.start}h26" stroke="#c4f8ff" stroke-width="1.5"/>`
@@ -202,6 +222,46 @@ function mapMarkup(config, run, editing) {
   return content;
 }
 
+function yieldSign(x, y) {
+  return `<path d="M${x - 6} ${y - 5}h12l-6 10Z" fill="#fff6e7" stroke="#a13f38" stroke-width="2"/>`;
+}
+
+function turnBan(x, y) {
+  return `<g transform="translate(${x} ${y})"><circle r="7" fill="#fff6e7" stroke="#a13f38" stroke-width="2"/>
+    <path d="M-3 3v-5h6m-2-2 2 2-2 2M-5-5 5 5" fill="none" stroke="#a13f38" stroke-width="1.4"/></g>`;
+}
+
+function junctionHandles(config) {
+  if (config.slipStart) {
+    const slip = slipGeometry(config);
+    return `<path d="${slip.path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
+      <path d="M${slip.b.x} ${slip.b.y + 26}V${slip.b.y}H${slip.end.x}" fill="none" stroke="#c4f8ff" stroke-dasharray="4 3"/>`
+      + handle("slipStart", slip.start.x, slip.start.y)
+      + handle("slipEnd", slip.end.x, slip.end.y)
+      + handle("slipBend", slip.b.x, slip.b.y + 26);
+  }
+  const guide = (key, label, path, x, y) => `<g data-snap="${key}" role="button" tabindex="0" aria-label="${label}">
+    <path d="${path}" fill="none" stroke="transparent" stroke-width="50"/>
+    <path d="${path}" fill="none" stroke="#c4f8ff" stroke-width="4" stroke-dasharray="5 4"/>
+    <circle cx="${x}" cy="${y}" r="8" fill="#c4f8ff" stroke="#0f4b70" stroke-width="2"/></g>`;
+  return slipAnchor === undefined
+    ? guide("start", "Set slip lane start", `M${world.outer} 205V${slipStartMax(config)}`, world.outer, (205 + slipStartMax(config)) / 2)
+    : `<circle cx="${world.outer}" cy="${slipAnchor}" r="7" fill="#c4f8ff"/>`
+      + guide("end", "Set slip lane end", `M348 ${world.signal}H430`, 386, world.signal);
+}
+
+function setSlipAnchor(key, value) {
+  if (key === "start") {
+    slipAnchor = Math.round(clamp(value, 205, slipStartMax(draft)));
+  } else {
+    draft.slipStart = slipAnchor;
+    draft.slipEnd = Math.round(clamp(value, 348, 430));
+    slipAnchor = undefined;
+  }
+  render();
+  map.querySelector(slipAnchor === undefined ? '[data-handle="slipEnd"]' : '[data-snap="end"]')?.focus();
+}
+
 function queueViewBox(frame) {
   const queued = frame.markers.filter(car => car.reason && car.zone === frame.queueZone);
   if (!queued.length) return comparisonViewBox;
@@ -225,7 +285,7 @@ function paintMap() {
     $("#original-map").innerHTML = mapMarkup(baseline, original, false);
     $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
   } else {
-    map.setAttribute("viewBox", editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
+    map.setAttribute("viewBox", editing && tool === "junction" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
     map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
   }
 }
@@ -237,12 +297,14 @@ const clock = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(second
 function renderInspector() {
   if (view === "design") {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
-    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing" }[tool];
+    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: "Junction design" }[tool];
     const detail = {
       move: draft.lanes & 2
         ? 'Square moves the join. Diamond ends the lane. Triangle starts the taper. <span id="merge-length"></span>'
         : "Drag the square along Alder Avenue.",
       curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
+      junction: draft.slipStart ? "Drag the start, end, or bend of the slip lane." :
+        slipAnchor === undefined ? "Tap Alder Avenue to start the slip lane." : "Tap the cross street to connect the slip lane.",
       signal: `Split the ${signalCycle}-second cycle between Alder Avenue and the cross street.`,
       lanes: laneSelected ? "Tap a receiving lane to toggle its connection." : "Tap the pickup lane to reveal its connections."
     }[tool];
@@ -250,11 +312,18 @@ function renderInspector() {
       <button data-lane="1" aria-pressed="${!!(draft.lanes & 1)}">Main lane</button>
       <button data-lane="2" aria-pressed="${!!(draft.lanes & 2)}">Merge lane</button>
     </div>` : "";
+    const rule = (key, label) => `<button data-rule="${key}" aria-pressed="${draft[key]}">${label}</button>`;
+    const junction = tool === "junction" ? `<div class="row chips junction-rules">
+      ${rule("pickupYield", "Pickup yields")}
+      ${rule("signalRight", "Signal right turn")}
+      ${rule("schoolRight", "School right turn")}
+      ${draft.slipStart ? `${rule("slipYield", "Slip lane yields")}<button data-action="remove-slip">Remove slip lane</button>` : ""}
+      </div>` : "";
     const timing = tool === "signal" ? `<div class="row spread timing"><label for="green">Alder green</label>
       <input id="green" type="range" min="${greenBounds[0]}" max="${greenBounds[1]}" value="${draft.green}"/>
       <output id="green-time" for="green"></output></div>
       <p id="cross-time"></p>` : "";
-    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${timing}<div class="row actions">
+    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${timing}${junction}<div class="row actions">
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
       <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button>
       <button class="primary" data-action="test">Test design</button></div>`;
@@ -280,12 +349,14 @@ function renderInspector() {
       ["Pickup trips", a.pickupFinished, b.pickupFinished, "", -1],
       ["Cross-street trips", a.crossFinished, b.crossFinished, "", -1],
       ["All trips", a.finished, b.finished, "", -1],
+      ...(design.slipStart ? [["Slip lane trips", a.slipFinished, b.slipFinished, "", -1]] : []),
+      ...(b.unserved ? [["Trips with no route", a.unserved, b.unserved, "", 1]] : []),
       ["Collisions", a.collisions, b.collisions, "", 1]
     ];
-    const goal = b.collisions === 0 && metric(b.longestQueue) < metric(a.longestQueue) &&
+    const goal = b.unserved === 0 && b.collisions === 0 && metric(b.longestQueue) < metric(a.longestQueue) &&
       metric(b.busDelay) <= metric(a.busDelay) && metric(b.crossDelay) <= metric(a.crossDelay) &&
       b.finished >= a.finished && b.pickupFinished >= a.pickupFinished && b.crossFinished >= a.crossFinished;
-    const summary = goal ? "Goal met. You shortened the peak queue and protected service on both roads."
+    const summary = b.unserved ? "Some trips lost access. Check the turn restrictions." : goal ? "Goal met. You shortened the peak queue and protected service on both roads."
       : b.collisions ? "Revise the layout. SUMO reported a collision."
         : "Goal: shorten the peak queue while protecting bus delay, cross-street delay, and completed trips.";
     const cell = (label, before, after, unit, direction) => {
@@ -328,6 +399,11 @@ function toggleLane(bit) {
     return;
   }
   draft.lanes ^= bit;
+  if (draft.slipStart && draft.lanes & 2) {
+    draft.mergeEnd = Math.min(mergeEndBounds(draft.node)[1], Math.max(draft.mergeEnd, draft.slipStart + 8));
+    draft.slipStart = Math.min(draft.slipStart, slipStartMax(draft));
+    draft.taperLength = clamp(draft.taperLength, ...taperLengthBounds(draft));
+  }
   render();
 }
 
@@ -351,7 +427,7 @@ map.addEventListener("pointermove", event => {
   if (!drag || drag.id !== event.pointerId) return;
   const p = mapPoint(event);
   const { key, start, before } = drag;
-  const delta = key === "entry" ? start.x - p.x : p.y - start.y;
+  const delta = key === "entry" || key === "slipBend" ? start.x - p.x : key === "slipEnd" ? p.x - start.x : p.y - start.y;
   draft.taperLength = before.taperLength;
   if (key === "node") {
     draft.mergeEnd = before.mergeEnd;
@@ -389,9 +465,19 @@ function selectLaneTarget(key) {
 }
 map.addEventListener("click", event => {
   if (tool === "lanes") selectLaneTarget(event.target.closest("[data-handle]")?.dataset.handle);
+  const snap = event.target.closest("[data-snap]")?.dataset.snap;
+  if (tool === "junction" && snap) {
+    const point = mapPoint(event);
+    setSlipAnchor(snap, snap === "start" ? point.y : point.x);
+  }
 });
 map.addEventListener("keydown", event => {
-  const key = event.target.dataset.handle;
+  const { handle: key, snap } = event.target.dataset;
+  if (snap && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    setSlipAnchor(snap, snap === "start" ? (205 + slipStartMax(draft)) / 2 : 386);
+    return;
+  }
   if (!key) return;
   if (tool === "lanes") {
     if (["Enter", " "].includes(event.key)) {
@@ -401,7 +487,7 @@ map.addEventListener("keydown", event => {
     }
     return;
   }
-  const direction = key === "entry" ? { ArrowLeft: 1, ArrowRight: -1 } : { ArrowUp: -1, ArrowDown: 1 };
+  const direction = key === "entry" || key === "slipBend" ? { ArrowLeft: 1, ArrowRight: -1 } : key === "slipEnd" ? { ArrowLeft: -1, ArrowRight: 1 } : { ArrowUp: -1, ArrowDown: 1 };
   if (!(event.key in direction)) return;
   event.preventDefault();
   updateHandle(key, draft[key] + direction[event.key] * (event.shiftKey ? 5 : 1));
@@ -439,8 +525,9 @@ function enterView(next) {
 document.addEventListener("click", event => {
   const button = event.target.closest("button");
   if (!button) return;
-  const { tool: nextTool, view: nextView, action, lane } = button.dataset;
+  const { tool: nextTool, view: nextView, action, lane, rule } = button.dataset;
   if (nextTool) {
+    slipAnchor = undefined;
     tool = nextTool;
     laneSelected = false;
     render();
@@ -451,6 +538,14 @@ document.addEventListener("click", event => {
     }
     enterView(nextView);
   } else if (lane) toggleLane(Number(lane));
+  else if (rule) {
+    draft[rule] = !draft[rule];
+    render();
+    inspector.querySelector(`[data-rule="${rule}"]`)?.focus();
+  } else if (action === "remove-slip") {
+    draft.slipStart = draft.slipEnd = 0;
+    render();
+  }
   else if (action === "apply" || action === "test") {
     if (changed()) {
       history.push(design);
@@ -467,6 +562,7 @@ document.addEventListener("click", event => {
       save();
     }
     draft = { ...design };
+    slipAnchor = undefined;
     render();
   } else if (action === "retry") {
     runDeviceSumo();

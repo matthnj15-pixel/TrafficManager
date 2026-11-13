@@ -57,3 +57,26 @@ test("native Eclipse SUMO runs the edited road and produces deterministic import
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the drawn slip lane serves eastbound traffic when the signal turn is banned", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "traffic-junction-test-"));
+  const input = join(dir, "request.json");
+  const output = join(dir, "results.json");
+  const design = { ...baseline, lanes: 2, mergeEnd: 245, slipStart: 220, slipEnd: 380,
+    signalRight: false, schoolRight: false, pickupYield: true };
+  try {
+    await writeFile(input, JSON.stringify(sumoRequest(design)));
+    const native = spawnSync(process.execPath, ["scripts/run-sumo.mjs", input, output], { encoding: "utf8" });
+    assert.equal(native.status, 0, native.stderr);
+    const data = readSumoComparison(JSON.parse(await readFile(output, "utf8")), design);
+    assert.ok(data.edited.results.slipFinished > 0);
+    assert.equal(data.edited.results.unserved, 4);
+    assert.equal(data.edited.results.collisions, 0);
+    assert.ok(data.edited.frames.some(frame => frame.markers.some(car => car.zone === "Slip lane")));
+    assert.equal(data.original.results.slipFinished, 0);
+    assert.equal(data.original.results.unserved, 0);
+    assert.throws(() => sumoRequest({ ...design, slipStart: 245 }), /Invalid/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

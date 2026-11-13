@@ -1,13 +1,18 @@
-import { arrivals, baseline, curve, duration, mergeTaper, normalizeDesign, scale, signalCycle, step, validate, vehicleDimensions, world } from "./model.mjs";
+import { arrivals, baseline, curve, duration, mergeTaper, normalizeDesign, scale, schoolEntry, signalCycle, slipGeometry, step, validate, vehicleDimensions, world } from "./model.mjs";
 
 export function sumoRequest(design) {
   if (!validate(design)) throw new Error("Invalid corridor design.");
+  const points = geometry => geometry.samples.map(({ x, y }) => [x, y]);
   const layout = input => {
     const config = normalizeDesign(input);
     const taper = mergeTaper(config);
+    const slip = config.slipStart ? slipGeometry(config) : undefined;
     return {
       design: config,
       taperSpeed: taper.speed,
+      slip: slip ? points(slip) : [],
+      slipSpeed: slip?.speed ?? 0,
+      schoolEntry: points(schoolEntry()),
       curves: [1, 2].map(lane => {
         const path = curve(config, lane);
         return { speed: path.speed, points: path.samples.map(({ x, y }) => [x, y]) };
@@ -44,7 +49,7 @@ export function readSumoComparison(data, design) {
     ["car", "bus", "pickup"].includes(marker.kind) && [marker.x, marker.y, marker.angle].every(Number.isFinite) &&
     nonnegative(marker.speed) && typeof marker.reason === "string" && typeof marker.zone === "string";
   for (const run of [data.original, data.edited]) {
-    if (!run.results || !["finished", "waiting", "longestQueue", "peakFrame", "busDelay", "crossDelay", "crossFinished", "pickupFinished", "collisions"].every(key => nonnegative(run.results[key])) ||
+    if (!run.results || !["finished", "waiting", "longestQueue", "peakFrame", "busDelay", "crossDelay", "crossFinished", "pickupFinished", "slipFinished", "unserved", "collisions"].every(key => nonnegative(run.results[key])) ||
       !Number.isInteger(run.results.peakFrame) || run.results.peakFrame > duration / step ||
       !Array.isArray(run.frames) || run.frames.length !== duration / step + 1 ||
       !run.frames.every(frame => frame && ["avenue", "avenue-yellow", "cross", "cross-yellow", "all-red"].includes(frame.phase) && typeof frame.queueZone === "string" && nonnegative(frame.finished) &&

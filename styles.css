@@ -93,3 +93,6 @@ button { touch-action: manipulation; }
 .metrics .loss { color: #ffcd9c; }
 .timing { margin-top: 4px; }
 .timing output { min-width: 2.6rem; text-align: right; }
+.junction-rules button { padding-inline: 9px; }
+[data-snap] { cursor: pointer; }
+[data-snap]:focus-visible circle { stroke: #ffc578; stroke-width: 3; }
