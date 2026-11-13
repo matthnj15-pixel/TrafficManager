@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#18372c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Willow Valley">
+<title>Willow Valley · Your living settlement</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+<link rel="icon" type="image/svg+xml" href="./icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body class="game-page">
+<div id="app">
+<header class="topbar">
+  <div><div class="eyebrow"><span id="environment">DEVELOPMENT</span> · <span id="offlineStatus">LOCAL GAME</span></div><h1>Willow Valley</h1><div id="calendar" class="calendar"></div></div>
+  <button class="icon-button" id="menuBtn" aria-label="Game menu">☰</button>
+</header>
+<section class="stats" id="resourceBar" aria-label="Settlement resources"></section>
+<main id="stage" class="stage">
+  <svg id="map" aria-label="Interactive map. Drag to pan, pinch to zoom, tap to build." role="img"></svg>
+  <div class="map-info" id="modeLabel">Explore · drag to pan · pinch to zoom</div>
+  <div class="zoom" aria-label="Zoom controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button></div>
+  <div class="road-controls" id="roadControls" hidden><span id="roadInfo">Tap the map to trace your road.</span><div><button id="undoRoad">Undo</button><button id="cancelRoad">Cancel</button><button id="confirmRoad" class="primary">Build road</button></div></div>
+</main>
+<div class="dispatch"><div class="dispatch-copy"><span class="eyebrow">THE VALLEY REPORT</span><p id="report"></p></div><button id="historyBtn" aria-label="Settlement history">↗</button></div>
+<nav class="dock" id="gameDock" aria-label="Game actions"></nav>
+</div>
+<div id="backdrop" class="backdrop" hidden></div>
+<section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label="Game panel" hidden>
+  <div class="sheet-grip"></div><div class="sheet-head"><h2 id="sheetTitle"></h2><button id="closeSheet" class="icon-button" aria-label="Close">×</button></div>
+  <div id="sheetBody"></div>
+</section>
+<input type="file" id="importSave" accept=".json,application/json" hidden>
+<div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
+<script type="module" src="./app.mjs"></script>
+</body></html>

@@ -1,0 +1,44 @@
+name: Test Willow Valley
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check syntax and simulation
+        run: |
+          node --check app.mjs
+          node --check ui-components.mjs
+          node --check ui-kit/catalog.mjs
+          node --check simulation.mjs
+          node --check road-editor.mjs
+          node --check road-network.mjs
+          node --check road-gesture.mjs
+          node --check desire-paths.mjs
+          node --check config.mjs
+          node --check scripts/build-offline.mjs
+          node --check scripts/build-icons.mjs
+          node --check sw.js
+          node --test tests/*.test.mjs
+      - name: Install browser test dependencies
+        run: npm install --no-audit --no-fund --no-package-lock
+      - name: Render iOS and PWA icons
+        run: |
+          npm run build:icons
+          CHECK_BUILT_ICONS=1 node --test tests/icon-artifacts.test.mjs
+      - name: Build self-contained offline HTML
+        run: npm run build:offline
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Exercise mobile portrait road interactions
+        run: npm run test:e2e

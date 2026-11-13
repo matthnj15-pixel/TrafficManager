@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#035352">
+<title>Willow Valley · Living UI Kit</title>
+<link rel="stylesheet" href="../styles.css">
+<link rel="stylesheet" href="./catalog.css">
+</head><body class="ui-kit-page">
+<header class="kit-hero">
+ <div class="kit-hero__inner">
+  <div class="kit-eyebrow">WILLOW VALLEY / INTERFACE DESIGN SYSTEM / WV-UI-002</div>
+  <h1>Willow Valley <span>UI Kit</span></h1>
+  <p>One design system. One set of components. The same source code in the kit and the game.</p>
+  <nav class="kit-toplinks" aria-label="Page navigation">
+    <a href="../">Play Development Game</a>
+    <a href="#tokens">Foundations</a>
+    <a href="#components">Components</a>
+    <a href="#game">Actual Game</a>
+  </nav>
+ </div>
+</header>
+<main class="kit-main">
+ <div class="kit-section-intro"><h2>Living components</h2><p>Changes made in <code>styles.css</code> and <code>ui-components.mjs</code> render here <em>and</em> in Willow Valley. Buttons, tabs and switches are interactive.</p></div>
+ <section class="kit-section" id="tokens" aria-labelledby="tokens-title">
+  <div class="kit-heading"><span>01</span><div><h2 id="tokens-title">Foundations</h2><p>Brand colors, semantic accents, typography and elevation.</p></div></div>
+  <div class="kit-grid kit-colors" id="palette"></div>
+  <div class="kit-two">
+   <article class="kit-paper"><div class="kit-caption">DISPLAY TYPE</div><div class="kit-display">A flourishing tomorrow</div><p class="kit-type-description">Storybook character in headings; clear system text for gameplay.</p><div class="kit-body-sample">Build a home for new families. Every choice shapes your valley.</div></article>
+   <article class="kit-paper"><div class="kit-caption">ELEVATION & SURFACES</div><div class="kit-surface-row"><div class="kit-surface kit-surface--paper">Paper</div><div class="kit-surface kit-surface--raised">Raised</div><div class="kit-surface kit-surface--teal">Primary</div></div><small>Canonical radii, borders and shadows are defined in the game's stylesheet.</small></article>
+  </div>
+ </section>
+ <section class="kit-section" id="components" aria-labelledby="components-title">
+  <div class="kit-heading"><span>02</span><div><h2 id="components-title">Buttons & navigation</h2><p>Actual game controls, including disabled states and a mobile-friendly dock.</p></div></div>
+  <div class="kit-two">
+   <article class="kit-paper"><div class="kit-caption">BUTTON VARIANTS</div><div id="buttonGallery" class="kit-stack"></div><div class="kit-caption kit-gap">INTERACTIVE RESPONSE</div><output id="buttonFeedback" class="kit-feedback">Try a button to see its action.</output></article>
+   <article class="kit-paper"><div class="kit-caption">NAVIGATION TOOL STATES</div><div id="navigationGallery" class="kit-nav-gallery"></div><div class="kit-caption kit-gap">SEGMENTED TABS</div><div id="tabGallery"></div><output id="tabFeedback" class="kit-feedback">All</output></article>
+  </div>
+ </section>
+ <section class="kit-section" aria-labelledby="hud-title">
+  <div class="kit-heading"><span>03</span><div><h2 id="hud-title">HUD & resources</h2><p>Reusable resource counters and status badges, wired to the same rendering functions as the live game.</p></div></div>
+  <article class="kit-paper"><div class="kit-caption">RESOURCE CHIPS</div><div id="resourceGallery" class="kit-resource-gallery"></div><div class="kit-caption kit-gap">STATUS PILLS</div><div id="statusGallery" class="kit-status-gallery"></div></article>
+ </section>
+ <section class="kit-section" aria-labelledby="alerts-title">
+  <div class="kit-heading"><span>04</span><div><h2 id="alerts-title">Alerts, emotes & notifications</h2><p>Information needs to be understood at a glance without stealing world space.</p></div></div>
+  <div class="kit-two">
+   <article class="kit-paper"><div id="alertGallery" class="kit-stack"></div></article>
+   <article class="kit-paper"><div class="kit-caption">CITIZEN EMOTES</div><div id="emoteGallery" class="kit-status-gallery"></div><div class="kit-caption kit-gap">TOAST NOTIFICATION</div><div id="toastGallery"></div></article>
+  </div>
+ </section>
+ <section class="kit-section" aria-labelledby="menu-title">
+  <div class="kit-heading"><span>05</span><div><h2 id="menu-title">Menus & input controls</h2><p>Build rows, bottom sheets, confirmations, tabs, inputs and toggles.</p></div></div>
+  <div class="kit-two">
+   <article class="kit-paper"><div class="kit-caption">BUILD CATALOG ROW</div><div id="buildGallery" class="kit-stack"></div><div class="kit-caption kit-gap">OPEN A GAME SHEET</div><div id="sheetButton"></div></article>
+   <article class="kit-paper"><div class="kit-caption">SETTINGS</div><div id="toggleGallery" class="kit-stack"></div><label class="kit-input-label">Town Name<input type="text" value="Willow Valley" aria-label="Town Name"></label><label class="kit-input-label">Sound Volume <output id="volumeValue">70%</output><input id="volume" type="range" min="0" max="100" value="70"></label></article>
+  </div>
+ </section>
+ <section class="kit-section" id="game" aria-labelledby="game-title">
+  <div class="kit-heading"><span>06</span><div><h2 id="game-title">Actual running game</h2><p>This is the real Development game embedded here—not a concept image. Try the controls. It shares the same local settlement save.</p></div></div>
+  <div class="kit-live">
+   <div class="kit-device"><iframe title="Live Willow Valley Development game" src="../" loading="lazy"></iframe></div>
+   <div class="kit-live-notes"><h3>What you see is what ships</h3><p>The preview loads <strong>the same HTML, CSS and JavaScript as the Development build.</strong> Its resource chips, dock, buttons, build rows and notifications come directly from the components illustrated above.</p><p>Because this is the real game, advancing a month also advances your Development settlement. Use Export Save for backups.</p><a href="../">Open the game full-screen</a><div class="kit-note">The world renderer itself remains separate from the UI design system. We will update world art independently when moving to 3D.</div></div>
+  </div>
+ </section>
+</main>
+<footer class="kit-footer">Willow Valley · The code is the design · UI kit v1</footer>
+<div class="kit-modal-backdrop" id="modalBackdrop" hidden></div>
+<script type="module" src="./catalog.mjs"></script>
+</body></html>
