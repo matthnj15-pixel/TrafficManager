@@ -18,7 +18,7 @@ const waitForServer = async () => {
   throw new Error("Local test server did not start");
 };
 
-test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 105000 }, async () => {
+test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 115000 }, async () => {
   let browser;
   try {
     await waitForServer();
@@ -256,6 +256,37 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await page.reload();
         await click("Road Builder");
         assert.equal(await page.locator("[data-road-segment]").count(), 2);
+        // Match the layout where both ramps attach to a widened middle segment.
+        await page.evaluate(() => {
+          const key = "traffic-manager.school-pickup.v1";
+          const design = JSON.parse(localStorage.getItem(key));
+          localStorage.setItem(key, JSON.stringify({ ...design, slipStart: 220, slipEnd: 378,
+            road: [
+              { top: 90, bottom: 220, north: 1, south: 1, bend: 0 },
+              { top: 220, bottom: 310, north: 3, south: 1, bend: 0 },
+              { top: 310, bottom: 590, north: 1, south: 1, bend: 0 }
+            ]
+          }));
+        });
+        await page.reload();
+        const dragToOuterLane = async (name, tool) => {
+          await click(tool);
+          const handle = page.getByRole("slider", { name, exact: true });
+          const start = await handle.getAttribute("aria-valuenow");
+          const width = await page.locator("#map").evaluate(svg => svg.getScreenCTM().a);
+          await drag(name, width * 38, 4);
+          assert.equal(await handle.getAttribute("aria-valuenow"), start);
+          assert.match(await handle.getAttribute("transform"), /^translate\(318 /);
+        };
+        await dragToOuterLane("Slip lane start", "Draw slip lane");
+        await dragToOuterLane("Merge node", "Move node");
+        await click("Apply");
+        const attached = await page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+        assert.equal(attached.slipLane, 3);
+        assert.equal(attached.pickupLane, 3);
+        await click("Test design");
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+
       }
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight ||

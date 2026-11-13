@@ -127,6 +127,28 @@ function mergeLength(config) {
   return Math.round((config.node - config.mergeEnd) * scale);
 }
 
+function connectionLaneCount(config, movement) {
+  if (config.road == null) return 0;
+  const y = movement === "pickup" ? config.node - .01 : config.slipStart + .01;
+  return avenueSegmentAt(config, y)?.north ?? 0;
+}
+
+function setConnectionLane(movement, lane) {
+  draft[movement === "slip" ? "slipLane" : "pickupLane"] = lane;
+  if (movement === "pickup") draft.lanes = 1;
+}
+
+function laneDragTargets(config, movement, y) {
+  const count = connectionLaneCount(config, movement);
+  const selected = selectedLane(config, movement);
+  return Array.from({ length: count }, (_, index) => {
+    const lane = index + 1;
+    const x = avenueLaneX("north", lane);
+    return `<path d="M${x} ${y - 17}v34" stroke="#c4f8ff" stroke-width="${lane === selected ? 4 : 2}"
+      opacity="${lane === selected ? 1 : .6}" pointer-events="none"/>`;
+  }).join("");
+}
+
 function handle(kind, x, y, selected = true) {
   const names = { node: "Merge node", slipStart: "Slip lane start", slipEnd: "Slip lane end", slipBend: "Slip lane bend", mergeEnd: "Merge lane end", taperLength: "Taper start", entry: "Entry handle", exit: "Exit handle", source: "Pickup lane", outer: "Main lane", auxiliary: "Merge lane" };
   const lane = ["source", "outer", "auxiliary"].includes(kind);
@@ -199,6 +221,7 @@ function mapMarkup(config, run, editing) {
   if (editing) {
     const { start, a, b, end, path } = selectedGeometry;
     if (tool === "move") {
+      if (drag?.key === "node") content += laneDragTargets(config, "pickup", end.y);
       const old = curve(design, design.lanes & 1 ? 1 : 2);
       content += `<path d="M${end.x} 275V375" stroke="#c4f8ff" opacity=".5" stroke-dasharray="3 5"/>
         <path d="${old.path}" fill="none" stroke="#fbfffc" opacity=".7" stroke-dasharray="4 4"/>
@@ -295,7 +318,7 @@ function selectJunction(id) {
 function slipHandles(config) {
   if (config.slipStart) {
     const slip = slipGeometry(config);
-    return `<path d="${slip.path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
+    return (drag?.key === "slipStart" ? laneDragTargets(config, "slip", slip.start.y) : "") + `<path d="${slip.path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
       <path d="M${slip.b.x} ${slip.b.y + 26}V${slip.b.y}H${slip.end.x}" fill="none" stroke="#c4f8ff" stroke-dasharray="4 3"/>`
       + handle("slipStart", slip.start.x, slip.start.y)
       + handle("slipEnd", slip.end.x, slip.end.y)
@@ -468,9 +491,9 @@ function movementLanes(node) {
   if (draft.road == null || !node) return "";
   const movement = node.id === "slip-fork" ? "slip" : node.id === "pickup" ? "pickup" : undefined;
   if (!movement) return "";
-  const segment = avenueSegmentAt(draft, movement === "pickup" ? draft.node - .01 : draft.slipStart + .01);
-  if (!segment?.north) return "<p>No northbound lane at this connection.</p>";
-  return `<div class="row chips" aria-label="Northbound lane connection">${Array.from({ length: segment.north }, (_, index) =>
+  const count = connectionLaneCount(draft, movement);
+  if (!count) return "<p>No northbound lane at this connection.</p>";
+  return `<div class="row chips" aria-label="Northbound lane connection">${Array.from({ length: count }, (_, index) =>
     `<button data-movement="${movement}:${index + 1}" aria-pressed="${(movement !== "pickup" || draft.lanes === 1) && selectedLane(draft, movement) === index + 1}">Lane ${index + 1}</button>`).join("")}</div>
     <p>Northbound lanes count from the center out.${movement === "pickup" && draft.lanes & 2 ? " Selecting a lane replaces the auxiliary taper." : ""}</p>`;
 }
@@ -518,7 +541,7 @@ function renderInspector() {
           "Tap a segment to set its lane layout." : "Set lanes by direction and adjust the curve."),
       move: draft.lanes & 2
         ? 'Square moves the join. Diamond ends the lane. Triangle starts the taper. <span id="merge-length"></span>'
-        : "Drag the square along Alder Avenue.",
+        : draft.road == null ? "Drag the square along Alder Avenue." : "Drag the square sideways to snap to a lane, or along Alder Avenue to move it.",
       curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
       junction: node ? ({
         signal: "Control turns and signal timing at this intersection.",
@@ -528,7 +551,7 @@ function renderInspector() {
         "slip-fork": "Traffic splits toward the signal or the slip lane.",
         "slip-join": "Choose which approach yields where the slip lane joins the cross street."
       })[node.id] : "Tap a node on the map to inspect its movements.",
-      slip: draft.slipStart ? "Drag the start, end, or bend of the slip lane." :
+      slip: draft.slipStart ? (draft.road == null ? "Drag the start, end, or bend of the slip lane." : "Drag the start sideways to snap to a lane, or along Alder Avenue to move it.") :
         slipAnchor === undefined ? "Tap Alder Avenue to start the slip lane." : "Tap the cross street to connect the slip lane.",
       signal: `Split the ${signalCycle}-second cycle between Alder Avenue and the cross street.`,
       lanes: laneSelected ? "Tap a receiving lane to toggle its connection." : "Tap the pickup lane to reveal its connections."
@@ -642,13 +665,32 @@ map.addEventListener("pointerdown", event => {
   const target = event.target.closest("[data-handle]");
   if (view !== "design" || !target || tool === "lanes" || tool === "signal" || drag || event.button !== 0) return;
   const key = target.dataset.handle;
-  drag = { key, start: mapPoint(event), id: event.pointerId, before: { ...draft } };
+  const movement = key === "node" ? "pickup" : key === "slipStart" ? "slip" : undefined;
+  const originX = key === "node" && !(draft.lanes & 1) ? world.auxiliary :
+    movement ? avenueLaneX("north", selectedLane(draft, movement)) : undefined;
+  drag = { key, movement, originX, start: mapPoint(event), id: event.pointerId, before: { ...draft } };
   map.setPointerCapture(event.pointerId);
 });
 map.addEventListener("pointermove", event => {
   if (!drag || drag.id !== event.pointerId) return;
   const p = mapPoint(event);
-  const { key, start, before } = drag;
+  const { key, movement, start, before } = drag;
+  const dx = p.x - start.x, dy = p.y - start.y;
+  if (movement && before.road != null && !drag.axis && Math.hypot(dx, dy) >= 5) {
+    drag.axis = Math.abs(dx) > Math.abs(dy) ? "lane" : "road";
+  }
+  if (drag.axis === "lane") {
+    const count = connectionLaneCount(before, movement);
+    if (count) {
+      const lane = clamp(Math.round((drag.originX + dx - world.outer) / laneSpacing) + 1, 1, count);
+      if (Math.abs(dx) >= laneSpacing / 2) setConnectionLane(movement, lane);
+      else draft = { ...before };
+    }
+    paintMap();
+    updateGeometryReadouts();
+    return;
+  }
+  if (movement && before.road != null && !drag.axis) return;
   const delta = key === "entry" || key === "slipBend" ? start.x - p.x : key === "slipEnd" ? p.x - start.x : p.y - start.y;
   draft.taperLength = before.taperLength;
   if (key === "node") {
@@ -759,6 +801,18 @@ map.addEventListener("keydown", event => {
     }
     return;
   }
+  const movement = key === "node" ? "pickup" : key === "slipStart" ? "slip" : undefined;
+  if (movement && draft.road != null && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
+    event.preventDefault();
+    const count = connectionLaneCount(draft, movement);
+    if (count) {
+      const lane = clamp(selectedLane(draft, movement) + (event.key === "ArrowRight" ? 1 : -1), 1, count);
+      setConnectionLane(movement, lane);
+      render();
+      map.querySelector(`[data-handle="${key}"]`)?.focus();
+    }
+    return;
+  }
   const direction = key === "entry" || key === "slipBend" ? { ArrowLeft: 1, ArrowRight: -1 } : key === "slipEnd" ? { ArrowLeft: -1, ArrowRight: 1 } : { ArrowUp: -1, ArrowDown: 1 };
   if (!(event.key in direction)) return;
   event.preventDefault();
@@ -824,8 +878,7 @@ document.addEventListener("click", event => {
     replaceRoadSegment({ [direction]: segment[direction] + Number(delta) });
   } else if (movement) {
     const [name, laneNumber] = movement.split(":");
-    draft[name === "slip" ? "slipLane" : "pickupLane"] = Number(laneNumber);
-    if (name === "pickup") draft.lanes = 1;
+    setConnectionLane(name, Number(laneNumber));
     render();
   } else if (action === "clear-road" || action === "remove-segment") {
     draft.road = action === "clear-road" ? [] : avenueSegments(draft).filter(item => item.top !== roadSelected);
