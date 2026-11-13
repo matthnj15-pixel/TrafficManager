@@ -316,8 +316,9 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(await page.locator("[data-free-node]").count(), 6);
         assert.equal(await page.locator("[data-road-node], [data-handle]").count(), 0);
         const southNode = page.getByRole("button", { name: "South connection", exact: true });
-        const south = await southNode.boundingBox();
-        assert.deepEqual(await southNode.locator("text").evaluate(label => ({
+        const southLabel = southNode.locator("text");
+        const south = await southLabel.boundingBox();
+        assert.deepEqual(await southLabel.evaluate(label => ({
           selectable: getComputedStyle(label).userSelect,
           pointerEvents: getComputedStyle(label).pointerEvents,
           nativeMenu: label.dispatchEvent(new Event("contextmenu", { bubbles: true, cancelable: true })),

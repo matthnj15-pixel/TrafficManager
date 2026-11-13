@@ -529,8 +529,12 @@ function demandMarkup() {
 
 function freeNetworkMarkup(network, editing) {
   const nodes = networkNodes(network);
-  const label = (x, y, name) => `<text x="${x}" y="${y}" text-anchor="middle" fill="#173f53" stroke="#e1e6d8" stroke-width="3"
-    paint-order="stroke" font-size="12" font-weight="750" pointer-events="none">${name}</text>`;
+  const label = (x, y, name) => {
+    const width = name.length * 7 + 12;
+    return `<rect x="${x - width / 2}" y="${y - 14}" width="${width}" height="18" fill="transparent"/>
+      <text x="${x}" y="${y}" text-anchor="middle" fill="#173f53" stroke="#e1e6d8" stroke-width="3"
+        paint-order="stroke" font-size="12" font-weight="750">${name}</text>`;
+  };
   const roads = network.roads.map((road, index) => {
     const { path, samples } = networkRoadGeometry(road, nodes);
     // Match the right-hand lane offsets used by the simulation.
