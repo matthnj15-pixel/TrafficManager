@@ -1,6 +1,6 @@
 import createNetconvert from "./sumo-wasm/netconvert.mjs";
 import createSumo from "./sumo-wasm/sumo.mjs";
-import { configureSignal, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
+import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
 
 async function run(create, args, inputs, outputs) {
   const messages = [];
@@ -15,7 +15,7 @@ async function simulate(request, layout) {
   const inputs = sumoInputs(request, layout);
   const [network] = await run(createNetconvert, netconvertArgs, inputs, ["corridor.net.xml"]);
   const [trace, trips, collisions] = await run(createSumo, sumoArgs(request), {
-    "corridor.net.xml": configureSignal(network, layout.design.green, request.signalCycle), "routes.xml": inputs["routes.xml"]
+    "corridor.net.xml": configureJunctions(network, layout.design, request.signalCycle), "routes.xml": inputs["routes.xml"]
   }, ["trace.xml", "trips.xml", "collisions.xml"]);
   return sumoResult(request, layout, trace, trips, collisions);
 }

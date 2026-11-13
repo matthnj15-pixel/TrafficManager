@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { avenueSegments, baseline, duration, step, world } from "../model.mjs";
-import { sumoInputs } from "../sumo-network.mjs";
+import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
 
 test("SUMO uses the same demand and exports the edited taper and lane choices", () => {
@@ -150,15 +150,46 @@ test("clean slate keeps demand and only routes trips through connected, correctl
   assert.match(controlledFiles["edges.xml"], /id="road-0-f"[^>]+priority="3"/);
   assert.match(controlledFiles["edges.xml"], /id="road-1-f"[^>]+priority="1"/);
   assert.match(controlledFiles["edges.xml"], /id="road-2-f"[^>]+priority="1"/);
-  assert.match(controlledFiles["routes.xml"], /route="west-to-east"[^>]+><stop edge="road-1-f" endPos="-0.5" duration="1"\/>/);
-  assert.doesNotMatch(controlledFiles["routes.xml"], /<stop edge="road-2-f"/);
+  const links = '<connection from="road-1-f" to="road-2-b" state="m"/><connection from="road-2-f" to="road-1-b" state="m"/>';
+  const controlledLinks = configureJunctions(links, controlled.edited.design, controlled.signalCycle);
+  assert.match(controlledLinks, /from="road-1-f"[^>]+state="s"/);
+  assert.match(controlledLinks, /from="road-2-f"[^>]+state="m"/);
 
   nodes[0] = { ...nodes[0], control: "allway_stop" };
   const allWay = sumoRequest({ ...baseline, network: { nodes, roads } });
   const allWayFiles = sumoInputs(allWay, allWay.edited);
   assert.match(allWayFiles["nodes.xml"], /id="j1"[^>]+type="allway_stop"/);
-  assert.doesNotMatch(allWayFiles["routes.xml"], /<stop edge=/);
+  assert.equal(configureJunctions(links, allWay.edited.design, allWay.signalCycle), links);
   roads[5] = { ...roads[5], backward: 0 };
   const oneWay = sumoRequest({ ...baseline, network: { nodes, roads } });
   assert.doesNotMatch(sumoInputs(oneWay, oneWay.edited)["routes.xml"], /south-to-school/);
+});
+
+test("a stop sign halts a vehicle at the junction and allows it to continue", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "traffic-sumo-stop-"));
+  const nodes = [{ id: "j1", x: 270, y: 180, control: "priority" }];
+  const roads = [
+    { a: "north", b: "j1", forward: 1, backward: 1, bend: 0, atB: "priority" },
+    { a: "west", b: "j1", forward: 1, backward: 1, bend: 0, atB: "stop" },
+    { a: "j1", b: "east", forward: 1, backward: 1, bend: 0 }
+  ];
+  const request = sumoRequest({ ...baseline, network: { nodes, roads } });
+  request.trips = [request.trips.find(trip => trip.origin === "cross")];
+  const run = (command, args) => {
+    const result = spawnSync(command, args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  try {
+    for (const [name, contents] of Object.entries(sumoInputs(request, request.edited))) await writeFile(join(dir, name), contents);
+    run("netconvert", netconvertArgs);
+    const file = join(dir, "corridor.net.xml");
+    await writeFile(file, configureJunctions(await readFile(file, "utf8"), request.edited.design, request.signalCycle));
+    run("sumo", sumoArgs(request));
+    const trace = await readFile(join(dir, "trace.xml"), "utf8");
+    const approach = trace.match(/<vehicle [^>]+lane="road-1-f_0"[^>]*>/g);
+    assert.ok(approach.slice(-5).some(tag => Number(tag.match(/speed="([^"]+)"/)[1]) < .05));
+    assert.match(await readFile(join(dir, "trips.xml"), "utf8"), /<tripinfo [^>]+arrival="\d+\.\d+"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

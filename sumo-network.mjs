@@ -296,14 +296,14 @@ function freeNetworkInputs(request, network) {
   const outgoing = new Map();
   const incoming = new Map();
   const edges = [], connections = [];
-  const approachRules = new Map();
+  const explicitJunctions = new Set();
   const usesApproachRules = node => node.control !== "traffic_light" && node.control !== "allway_stop";
   const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
   const addEdge = (id, from, to, points, count, speed, length, rule = "default") => {
     if (!count) return;
     const control = usesApproachRules(nodes.get(to)) ? rule : "default";
     const priority = { default: 2, priority: 3, yield: 1, stop: 1 }[control];
-    if (control !== "default") approachRules.set(id, control);
+    if (control !== "default") explicitJunctions.add(to);
     const edge = { id, from, to, count, length };
     if (!outgoing.has(from)) outgoing.set(from, []);
     if (!incoming.has(to)) incoming.set(to, []);
@@ -360,8 +360,6 @@ function freeNetworkInputs(request, network) {
       }
     }
   }
-  const explicitJunctions = new Set([...incoming].filter(([, edges]) =>
-    edges.some(edge => approachRules.has(edge.id))).map(([id]) => id));
   const routes = Object.entries(request.types).map(([id, dimensions]) =>
     element("vType", { id, ...dimensions, accel: id === "bus" ? 1.05 : 2.1, decel: 4.5,
       sigma: 0, minGap: 2, maxSpeed: 12, speedFactor: 1, speedDev: 0 }));
@@ -373,14 +371,9 @@ function freeNetworkInputs(request, network) {
       routeCache.set(id, path);
       if (path) routes.push(element("route", { id, edges: path.join(" ") }));
     }
-    const path = routeCache.get(id);
-    if (!path) continue;
-    const vehicle = { id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2),
-      departSpeed: 0, departPos: "base", departLane: "best" };
-    const stops = path.filter(edge => approachRules.get(edge) === "stop");
-    const tag = element("vehicle", vehicle);
-    routes.push(stops.length ? tag.replace(/\/>$/, ">") + stops.map(edge =>
-      element("stop", { edge, endPos: -.5, duration: 1 })).join("") + "</vehicle>" : tag);
+    if (routeCache.get(id)) routes.push(element("vehicle", {
+      id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base", departLane: "best"
+    }));
   }
   return {
     "nodes.xml": wrap("nodes", [...nodes.values()].map(node => element("node", {
@@ -398,7 +391,21 @@ export const netconvertArgs = [
   "--offset.disable-normalization", "--output-file", "corridor.net.xml"
 ];
 
-export function configureSignal(network, green, cycle) {
+export function configureJunctions(network, design, cycle) {
+  if (!design.network) return configureSignal(network, design.green, cycle);
+  const nodes = networkNodes(design.network);
+  const stopEdges = new Set();
+  for (const [index, road] of design.network.roads.entries()) {
+    if (road.forward && road.atB === "stop" && nodes.get(road.b).control === "priority") stopEdges.add(`road-${index}-f`);
+    if (road.backward && road.atA === "stop" && nodes.get(road.a).control === "priority") stopEdges.add(`road-${index}-b`);
+  }
+  if (!stopEdges.size) return network;
+  // SUMO's stop link state enforces a full stop before applying the junction's conflict rules.
+  return network.replace(/<connection\s[^>]+>/g, tag =>
+    stopEdges.has(attributes(tag).from) ? tag.replace(/\bstate="[^"]*"/, 'state="s"') : tag);
+}
+
+function configureSignal(network, green, cycle) {
   // Netconvert assigns indices by junction geometry. Read them before setting phases.
   const links = [...network.matchAll(/<connection\s[^>]*>/g)].map(([tag]) => attributes(tag))
     .filter(link => link.tl === "signal").sort((a, b) => a.linkIndex - b.linkIndex);

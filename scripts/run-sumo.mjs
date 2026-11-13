@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configureSignal, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
+import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 
 const [input, output] = process.argv.slice(2);
 const request = JSON.parse(readFileSync(input, "utf8"));
@@ -13,7 +13,7 @@ function run(layout) {
   for (const [file, text] of Object.entries(sumoInputs(request, layout))) writeFileSync(join(cwd, file), text);
   command("netconvert", netconvertArgs);
   const network = join(cwd, "corridor.net.xml");
-  writeFileSync(network, configureSignal(readFileSync(network, "utf8"), layout.design.green, request.signalCycle));
+  writeFileSync(network, configureJunctions(readFileSync(network, "utf8"), layout.design, request.signalCycle));
   command("sumo", sumoArgs(request));
   const [trace, trips, collisions] = ["trace.xml", "trips.xml", "collisions.xml"]
     .map(file => readFileSync(join(cwd, file), "utf8"));
