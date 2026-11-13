@@ -1,4 +1,4 @@
-export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, taperYield: false, signalRight: true, schoolRight: true, road: null, slipLane: 1, pickupLane: 1 });
+export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, taperYield: false, signalRight: true, schoolRight: true, schoolAccess: true, road: null, slipLane: 1, pickupLane: 1 });
 export const world = Object.freeze({
   start: { x: 448, y: 440 }, inner: 261, outer: 280, auxiliary: 302,
   signal: 180, south: 590, north: 90
@@ -20,11 +20,11 @@ export function validate(design) {
     Number.isFinite(design.node) && design.node >= 275 && design.node <= 375 &&
     Number.isFinite(design.entry) && design.entry >= 25 && design.entry <= 125 &&
     Number.isFinite(design.exit) && design.exit >= 20 && design.exit <= 125 &&
-    [1, 2, 3].includes(design.lanes) &&
+    ([1, 2, 3].includes(design.lanes) || design.lanes === 0 && Array.isArray(design.road)) &&
     validRoad(design.road) &&
     ["slipLane", "pickupLane"].every(key => design[key] === undefined ||
       Number.isInteger(design[key]) && design[key] >= 1 && design[key] <= 4) &&
-    ["slipYield", "pickupYield", "taperYield", "signalRight", "schoolRight"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
+    ["slipYield", "pickupYield", "taperYield", "signalRight", "schoolRight", "schoolAccess"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
     (design.slipBend === undefined || Number.isInteger(design.slipBend) && design.slipBend >= 16 && design.slipBend <= 70) &&
     ((design.slipStart ?? 0) === 0 && (design.slipEnd ?? 0) === 0 ||
       Number.isInteger(design.slipStart) && design.slipStart >= 205 && design.slipStart <= slipStartMax(design) &&
@@ -166,6 +166,7 @@ export function normalizeDesign(design) {
     slipYield: design.slipYield ?? baseline.slipYield, pickupYield: design.pickupYield ?? baseline.pickupYield,
     taperYield: design.taperYield ?? design.pickupYield ?? baseline.taperYield,
     road: design.road ?? null, slipLane: design.slipLane ?? 1, pickupLane: design.pickupLane ?? 1,
+    schoolAccess: design.schoolAccess ?? baseline.schoolAccess,
     signalRight: design.signalRight ?? baseline.signalRight, schoolRight: design.schoolRight ?? baseline.schoolRight
   };
 }
@@ -188,7 +189,7 @@ function validRoad(road) {
 
 export function avenueAnchors(design) {
   return [...new Set([world.north, world.signal, design.slipStart, design.lanes & 2 ? design.mergeEnd : 0,
-    design.node, schoolEntry().start.y, world.south].filter(Boolean))].sort((a, b) => a - b);
+    design.lanes ? design.node : 0, design.schoolAccess === false ? 0 : schoolEntry().start.y, world.south].filter(Boolean))].sort((a, b) => a - b);
 }
 
 export function avenueSegments(design) {

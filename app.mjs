@@ -43,6 +43,11 @@ let roadMode = "select";
 let roadDrag;
 let roadDrawPointer;
 let roadMessage = "";
+let inspectorCollapsed = false;
+let camera;
+const mapPointers = new Map();
+let cameraGesture;
+let suppressMapClick = false;
 let currentRun;
 let time = 0;
 let playing = false;
@@ -169,20 +174,20 @@ function mapMarkup(config, run, editing) {
   const selectedGeometry = main ? primary : secondary;
   const frame = run?.frames[Math.floor(time / step + 1e-8)];
   let content = scenery + (config.road == null ? avenue : avenueMarkup(config));
-  if (editing && tool === "road" && roadMode === "draw" && config.road?.length === 0) return content + roadTargets(config);
+  if (editing && tool === "road" && config.road?.length === 0) return content + roadTargets(config);
   const taper = mergeTaper(config);
   if (aux) {
     content += `<path d="${taper.path}" fill="none" stroke="#46525b" stroke-width="20"/>
       <path d="M291 ${config.node}V${taper.start}" stroke="#e6e9e5" stroke-width="1" stroke-dasharray="7 7"/>`;
   }
-  content += `<path d="${selectedGeometry.path}" fill="none" stroke="#e9e7d8" stroke-width="23"/>
+  if (config.lanes) content += `<path d="${selectedGeometry.path}" fill="none" stroke="#e9e7d8" stroke-width="23"/>
     <path d="${selectedGeometry.path}" fill="none" stroke="#46525b" stroke-width="19"/>
     <path d="${selectedGeometry.path}" fill="none" stroke="#f3e6bb" stroke-width="1" stroke-dasharray="8 9" opacity=".7"/>`;
   if (main && aux) {
     content += `<path d="${secondary.path}" fill="none" stroke="#46525b" stroke-width="17"/>`;
   }
   const school = schoolEntry();
-  content += `<path d="${school.path}" fill="none" stroke="#46525b" stroke-width="10"
+  if (config.schoolAccess) content += `<path d="${school.path}" fill="none" stroke="#46525b" stroke-width="10"
     ${config.schoolRight ? "" : 'opacity=".35" stroke-dasharray="4 3"'}/>`;
   if (config.slipStart) {
     const slip = slipGeometry(config);
@@ -193,7 +198,7 @@ function mapMarkup(config, run, editing) {
   if (config.pickupYield && main) content += yieldSign(selectedGeometry.end.x + 17, config.node + 17);
   if (config.taperYield && aux) content += yieldSign(world.auxiliary + 13, taper.end + 14);
   if (!config.signalRight) content += turnBan(world.outer + 14, world.signal + 23);
-  if (!config.schoolRight) content += turnBan(world.outer + 15, school.start.y + 5);
+  if (config.schoolAccess && !config.schoolRight) content += turnBan(world.outer + 15, school.start.y + 5);
 
   const phase = frame?.phase ?? "all-red";
   const light = (road, x, y) => {
@@ -220,7 +225,7 @@ function mapMarkup(config, run, editing) {
   }
   if (editing) {
     const { start, a, b, end, path } = selectedGeometry;
-    if (tool === "move") {
+    if (tool === "move" && config.lanes) {
       if (drag?.key === "node") content += laneDragTargets(config, "pickup", end.y);
       const old = curve(design, design.lanes & 1 ? 1 : 2);
       content += `<path d="M${end.x} 275V375" stroke="#c4f8ff" opacity=".5" stroke-dasharray="3 5"/>
@@ -234,7 +239,7 @@ function mapMarkup(config, run, editing) {
           + handle("taperLength", world.auxiliary + 26, taper.start);
       }
     }
-    if (tool === "curve") {
+    if (tool === "curve" && config.lanes) {
       content += `<path d="${path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
         <path d="M${start.x} ${start.y}L${a.x} ${a.y}M${end.x} ${end.y}L${b.x} ${b.y}" fill="none" stroke="#c4f8ff" stroke-width="1.5" stroke-dasharray="4 4"/>
         <rect x="${start.x - 4}" y="${start.y - 4}" width="8" height="8" fill="#c4f8ff"/>
@@ -279,6 +284,8 @@ function junctions(config) {
     { id: "school", name: "School access", x: school.x, y: school.y, rule: "schoolRight", label: "Right turn allowed",
       movement: schoolEntry().path }
   ];
+  if (!config.lanes) nodes.splice(nodes.findIndex(node => node.id === "pickup"), 1);
+  if (!config.schoolAccess) nodes.splice(nodes.findIndex(node => node.id === "school"), 1);
   if (config.lanes & 2) nodes.push({
     id: "taper", name: "Merge lane end", x: outer, y: config.mergeEnd, rule: "taperYield", label: "Merge lane yields",
     movement: mergeTaper(config).path
@@ -391,7 +398,10 @@ function roadTargets(config) {
       }
     }
   }
-  const anchors = [...new Set([...avenueAnchors(config), ...segments.flatMap(segment => [segment.top, segment.bottom])])];
+  const anchors = [...new Set([world.north, world.south,
+    ...segments.flatMap(segment => [segment.top, segment.bottom]),
+    ...avenueAnchors(config).filter(y => segments.some(segment => segment.top <= y && y <= segment.bottom))
+  ])];
   if (roadMode === "draw" && roadDrawPointer && roadDrag !== undefined) {
     content += `<path d="M260 ${roadDrag}V${roadDrawPointer.y}H${roadDrawPointer.x}" fill="none"
       stroke="#c4f8ff" stroke-width="3" stroke-dasharray="5 4" pointer-events="none"/>`;
@@ -521,7 +531,7 @@ function paintMap() {
     $("#original-map").innerHTML = mapMarkup(baseline, original, false);
     $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
   } else {
-    map.setAttribute("viewBox", editing && tool === "road" ? "130 55 370 810" : editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
+    map.setAttribute("viewBox", editing && camera ? camera.join(" ") : editing && tool === "road" ? "130 55 370 810" : editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
     map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
   }
 }
@@ -535,14 +545,21 @@ function renderInspector() {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
     const node = tool === "junction" ? junctions(draft).find(item => item.id === selectedJunction) : undefined;
     const title = { road: "Road Builder", move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: node?.name ?? "Junctions", slip: "Draw slip lane" }[tool];
+    const collapse = `<button class="inspector-toggle" data-action="toggle-inspector"
+      aria-label="${inspectorCollapsed ? "Expand" : "Minimize"} design panel" aria-expanded="${!inspectorCollapsed}">${inspectorCollapsed ? "⌃" : "⌄"}</button>`;
+    const heading = `<div class="row inspector-heading"><h1>${title}</h1>${collapse}</div>`;
+    if (inspectorCollapsed) {
+      inspector.innerHTML = heading;
+      return;
+    }
     const detail = {
       road: roadMessage || (roadMode === "draw" ? "Drag or tap between two road nodes." : roadMode === "split" ?
         "Tap a segment where you want to add a node." : roadSelected === undefined ?
           "Tap a segment to set its lane layout." : "Set lanes by direction and adjust the curve."),
-      move: draft.lanes & 2
+      move: !draft.lanes ? "Use Connect lanes to add the pickup connection." : draft.lanes & 2
         ? 'Square moves the join. Diamond ends the lane. Triangle starts the taper. <span id="merge-length"></span>'
         : draft.road == null ? "Drag the square along Alder Avenue." : "Drag the square sideways to snap to a lane, or along Alder Avenue to move it.",
-      curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
+      curve: !draft.lanes ? "Use Connect lanes to add the pickup connection." : `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
       junction: node ? ({
         signal: "Control turns and signal timing at this intersection.",
         pickup: node.rule ? "Set priority where the pickup lane enters Alder Avenue." : "Pickup traffic enters its own lane here. Set priority at the merge lane end.",
@@ -568,7 +585,7 @@ function renderInspector() {
       <input id="green" type="range" min="${greenBounds[0]}" max="${greenBounds[1]}" value="${draft.green}"/>
       <output id="green-time" for="green"></output></div>
       <p id="cross-time"></p>` : "";
-    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${junction}${movementLanes(node)}${timing}${slip}${tool === "road" ? roadControls() : ""}<div class="row actions">
+    inspector.innerHTML = `${heading}<p id="detail">${detail}</p>${choices}${junction}${movementLanes(node)}${timing}${slip}${tool === "road" ? roadControls() : ""}<div class="row actions">
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
       <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button>
       <button class="primary" data-action="test">Test design</button></div>`;
@@ -601,7 +618,7 @@ function renderInspector() {
     const goal = b.unserved === 0 && b.collisions === 0 && metric(b.longestQueue) < metric(a.longestQueue) &&
       metric(b.busDelay) <= metric(a.busDelay) && metric(b.crossDelay) <= metric(a.crossDelay) &&
       b.finished >= a.finished && b.pickupFinished >= a.pickupFinished && b.crossFinished >= a.crossFinished;
-    const summary = b.unserved ? "Some trips lost access. Check the turn restrictions." : goal ? "Goal met. You shortened the peak queue and protected service on both roads."
+    const summary = b.unserved ? "Some trips lost access. Check road connections and turn restrictions." : goal ? "Goal met. You shortened the peak queue and protected service on both roads."
       : b.collisions ? "Revise the layout. SUMO reported a collision."
         : "Goal: shorten the peak queue while protecting bus delay, cross-street delay, and completed trips.";
     const cell = (label, before, after, unit, direction) => {
@@ -640,7 +657,7 @@ function updateSimulationReadout() {
 function toggleLane(bit) {
   laneSelected = true;
   if ((draft.lanes ^ bit) === 0) {
-    $("#detail").textContent = "Keep at least one lane connected.";
+    if ($("#detail")) $("#detail").textContent = "Keep at least one lane connected.";
     return;
   }
   draft.lanes ^= bit;
@@ -660,6 +677,72 @@ function finishDrag(cancel = false) {
   if (cancel) draft = before;
   render();
 }
+
+function gestureGeometry() {
+  const [first, second] = mapPointers.values();
+  if (!second) return { x: first.clientX, y: first.clientY, distance: 1 };
+  return {
+    x: (first.clientX + second.clientX) / 2, y: (first.clientY + second.clientY) / 2,
+    distance: Math.max(1, Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY))
+  };
+}
+
+function startCameraGesture() {
+  const point = gestureGeometry();
+  const { x, y, width, height } = map.viewBox.baseVal;
+  cameraGesture = { point, anchor: mapPoint({ clientX: point.x, clientY: point.y }),
+    bounds: [x, y, width, height], scale: map.getScreenCTM().a };
+  for (const id of mapPointers.keys()) map.setPointerCapture(id);
+}
+
+map.addEventListener("pointerdown", event => {
+  if (view !== "design" || event.button !== 0) return;
+  if (!mapPointers.size) suppressMapClick = false;
+  mapPointers.set(event.pointerId, event);
+  if (mapPointers.size === 1 && event.target.closest("[role=button], [data-handle]")) return;
+  if (mapPointers.size > 1) {
+    finishDrag(true);
+    roadDrag = roadDrawPointer = undefined;
+    suppressMapClick = true;
+  }
+  startCameraGesture();
+  event.stopImmediatePropagation();
+}, true);
+
+map.addEventListener("pointermove", event => {
+  if (!mapPointers.has(event.pointerId)) return;
+  mapPointers.set(event.pointerId, event);
+  if (!cameraGesture) return;
+  event.stopImmediatePropagation();
+  const { point, anchor, bounds, scale } = cameraGesture;
+  const next = gestureGeometry();
+  const factor = clamp(next.distance / point.distance, bounds[2] / 780, bounds[2] / 95);
+  if (!suppressMapClick && Math.hypot(next.x - point.x, next.y - point.y) < 4) return;
+  suppressMapClick = true;
+  const [x, y, width, height] = bounds;
+  camera = [
+    anchor.x + (x - anchor.x - (next.x - point.x) / scale) / factor,
+    anchor.y + (y - anchor.y - (next.y - point.y) / scale) / factor,
+    width / factor, height / factor
+  ];
+  map.setAttribute("viewBox", camera.join(" "));
+}, true);
+
+for (const type of ["pointerup", "pointercancel"]) {
+  map.addEventListener(type, event => {
+    if (!mapPointers.delete(event.pointerId) || !cameraGesture) return;
+    event.stopImmediatePropagation();
+    if (mapPointers.size) startCameraGesture();
+    else cameraGesture = undefined;
+  }, true);
+}
+
+map.addEventListener("click", event => {
+  if (suppressMapClick && event.detail) {
+    event.stopImmediatePropagation();
+    suppressMapClick = false;
+  }
+}, true);
 
 map.addEventListener("pointerdown", event => {
   const target = event.target.closest("[data-handle]");
@@ -860,10 +943,16 @@ document.addEventListener("click", event => {
     render();
   } else if (nextView) {
     if (changed() && nextView !== "design") {
+      inspectorCollapsed = false;
+      renderInspector();
       $("#detail").textContent = "Apply or cancel your draft before leaving Design.";
       return;
     }
     enterView(nextView);
+  } else if (action === "toggle-inspector") {
+    inspectorCollapsed = !inspectorCollapsed;
+    renderInspector();
+    $(".inspector-toggle").focus();
   } else if (nextRoadMode) {
     roadMode = roadMode === nextRoadMode ? "select" : nextRoadMode;
     roadStart = undefined;
@@ -881,7 +970,12 @@ document.addEventListener("click", event => {
     setConnectionLane(name, Number(laneNumber));
     render();
   } else if (action === "clear-road" || action === "remove-segment") {
-    draft.road = action === "clear-road" ? [] : avenueSegments(draft).filter(item => item.top !== roadSelected);
+    if (action === "clear-road") {
+      draft = { ...draft, road: [], lanes: 0, slipStart: 0, slipEnd: 0, schoolAccess: false, slipLane: 1, pickupLane: 1 };
+      selectedJunction = slipAnchor = undefined;
+    } else {
+      draft.road = avenueSegments(draft).filter(item => item.top !== roadSelected);
+    }
     roadSelected = roadStart = undefined;
     roadMode = action === "clear-road" ? "draw" : "select";
     render();
@@ -1017,6 +1111,7 @@ function runDeviceSumo() {
 $("#reset").addEventListener("click", () => {
   history.push(design);
   design = { ...baseline };
+  camera = undefined;
   invalidateRun();
   draft = { ...design };
   save();

@@ -228,6 +228,11 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await click("Road Builder");
         await click("Clear avenue");
         assert.equal(await page.locator("[data-road-segment]").count(), 0);
+        assert.deepEqual(await page.locator("[data-road-node]").evaluateAll(nodes => nodes.map(node => node.dataset.roadNode)), ["90", "590"]);
+        await click("Minimize design panel");
+        assert.equal(await page.getByRole("button", { name: "Clear avenue" }).count(), 0);
+        await click("Expand design panel");
+        assert.equal(await page.getByRole("button", { name: "Clear avenue" }).count(), 1);
         const terminal = async name => {
           const box = await page.getByRole("button", { name, exact: true }).boundingBox();
           return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
@@ -248,6 +253,9 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await click("Apply");
         const design = await page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
         assert.equal(design.road[0].north, 1);
+        assert.equal(design.lanes, 0);
+        assert.equal(design.schoolAccess, false);
+        assert.equal(design.slipStart, 0);
         assert.equal(design.road[1].north, 4);
         assert.equal(design.road[1].south, 1);
         assert.equal(design.road[1].bend, 1);
@@ -260,7 +268,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await page.evaluate(() => {
           const key = "traffic-manager.school-pickup.v1";
           const design = JSON.parse(localStorage.getItem(key));
-          localStorage.setItem(key, JSON.stringify({ ...design, slipStart: 220, slipEnd: 378,
+          localStorage.setItem(key, JSON.stringify({ ...design, lanes: 1, slipStart: 220, slipEnd: 378,
             road: [
               { top: 90, bottom: 220, north: 1, south: 1, bend: 0 },
               { top: 220, bottom: 310, north: 3, south: 1, bend: 0 },
@@ -278,6 +286,18 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
           assert.equal(await handle.getAttribute("aria-valuenow"), start);
           assert.match(await handle.getAttribute("transform"), /^translate\(318 /);
         };
+        await click("Minimize design panel");
+        const map = page.locator("#map");
+        const viewBox = async () => (await map.getAttribute("viewBox")).split(" ").map(Number);
+        const beforeCamera = await viewBox();
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 80, y: 390, id: 1 }, { x: 180, y: 390, id: 2 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: 70, y: 420, id: 1 }, { x: 210, y: 420, id: 2 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        const afterCamera = await viewBox();
+        assert.ok(afterCamera[2] < beforeCamera[2]);
+        assert.notEqual(afterCamera[1], beforeCamera[1]);
+        await click("Expand design panel");
+        await page.reload();
         await dragToOuterLane("Slip lane start", "Draw slip lane");
         await dragToOuterLane("Merge node", "Move node");
         await click("Apply");

@@ -25,6 +25,7 @@ export function sumoInputs(request, layout) {
   const { design, curves, taper } = layout;
   const main = design.lanes & 1;
   const auxiliary = design.lanes & 2;
+  const schoolOpen = design.schoolAccess !== false && design.schoolRight;
   const nodes = [], edges = [], connections = [], prohibitions = [], routes = [];
   const element = (tag, attributes) => `<${tag} ${Object.entries(attributes).map(([key, value]) => `${key}="${value}"`).join(" ")}/>`;
   const wrap = (tag, items) => `<${tag}>\n${items.join("\n")}\n</${tag}>\n`;
@@ -39,7 +40,7 @@ export function sumoInputs(request, layout) {
   const { node: join, mergeEnd: end, slipStart, slipEnd } = design;
   const approachEnd = auxiliary ? "taper" : slipStart ? "slip-fork" : "signal";
   const afterTaper = slipStart ? "slip-fork" : "signal";
-  const beforeFork = auxiliary ? "downstream" : "approach";
+  const beforeFork = !design.lanes ? "avenue" : auxiliary ? "downstream" : "approach";
   const signalIn = slipStart ? "signal-in" : beforeFork;
   const prohibit = (prohibitor, prohibited) => prohibitions.push({ prohibitor, prohibited });
   node("south", outer, south, "dead_end");
@@ -49,27 +50,31 @@ export function sumoInputs(request, layout) {
   node("signal", outer, signal, "traffic_light");
   node("cross-west", 40, signal, "dead_end");
   node("cross-east", 488, signal, "dead_end");
-  node("join", outer, join, design.road == null && main && !design.pickupYield ? "zipper" : "priority");
-  node("pickup", ...curves[0].points[0], "dead_end");
-  if (design.schoolRight) {
+  if (design.lanes) node("join", outer, join, design.road == null && main && !design.pickupYield ? "zipper" : "priority");
+  if (design.lanes) node("pickup", ...curves[0].points[0], "dead_end");
+  const avenueEnd = design.lanes ? "join" : approachEnd;
+  const avenueEndY = design.lanes ? join : slipStart || signal;
+  if (schoolOpen) {
     const schoolY = layout.schoolEntry[0][1];
     node("school-fork", outer, schoolY);
     edge("avenue-south", "south", "school-fork", [[outer, south], [outer, schoolY]]);
-    edge("avenue", "school-fork", "join", [[outer, schoolY], [outer, join]]);
+    edge("avenue", "school-fork", avenueEnd, [[outer, schoolY], [outer, avenueEndY]]);
     connect("avenue-south", "avenue");
   } else {
-    edge("avenue", "south", "join", [[outer, south], [outer, join]]);
+    edge("avenue", "south", avenueEnd, [[outer, south], [outer, avenueEndY]]);
   }
   edge("inner", "inner-south", "signal", [[inner, south], [inner, signal]]);
   edge("inner-exit", "signal", "inner-north", [[inner, signal], [inner, north]]);
   edge("exit", "signal", "north", [[outer, signal], [outer, north]]);
-  edge("approach", "join", approachEnd, [[outer, join], [outer, auxiliary ? end : slipStart || signal]]);
-  connect("avenue", "approach", { visibility: 25 });
+  if (design.lanes) {
+    edge("approach", "join", approachEnd, [[outer, join], [outer, auxiliary ? end : slipStart || signal]]);
+    connect("avenue", "approach", { visibility: 25 });
+  }
   edge("cross-in", "cross-west", "signal", [[40, signal], [outer, signal]], 12);
   edge("cross-out", "signal", slipStart ? "slip-join" : "cross-east", [[outer, signal], [slipEnd || 488, signal]], 12, design.slipYield ? 2 : 1);
   connect(signalIn, "exit");
   if (design.signalRight) connect(signalIn, "cross-out");
-  if (design.schoolRight) {
+  if (schoolOpen) {
     node("school-entry", ...layout.schoolEntry.at(-1), "dead_end");
     edge("school-in", "school-fork", "school-entry", layout.schoolEntry, 7);
     connect("avenue-south", "school-in");
@@ -90,7 +95,7 @@ export function sumoInputs(request, layout) {
   connect("inner", "inner-exit");
   connect("cross-in", "cross-out");
   const pickup = curves[main ? 0 : 1];
-  edge("pickup-road", "pickup", "join", pickup.points, pickup.speed, design.pickupYield ? 1 : 2);
+  if (design.lanes) edge("pickup-road", "pickup", "join", pickup.points, pickup.speed, design.pickupYield ? 1 : 2);
   if (main) {
     connect("pickup-road", "approach", { visibility: 25 });
     if (design.pickupYield) prohibit("avenue->approach", "pickup-road->approach");
@@ -110,7 +115,7 @@ export function sumoInputs(request, layout) {
       sigma: 0, tau: 1, accel: bus ? 1.05 : 2.1, decel: 4.5, maxSpeed: bus ? 12 : 14, speedFactor: 1, speedDev: 0 }));
   }
   const east = slipStart ? "cross-out east-exit" : "cross-out";
-  const beforeSignal = auxiliary ? "approach downstream" : "approach";
+  const beforeSignal = !design.lanes ? "" : auxiliary ? "approach downstream" : "approach";
   const toSignal = slipStart ? beforeSignal + " signal-in" : beforeSignal;
   const custom = design.road != null;
   const trunkIds = new Set(["avenue-south", "avenue", "approach", "downstream", "signal-in", "exit"]);
@@ -241,8 +246,8 @@ export function sumoInputs(request, layout) {
   };
   if (!custom) route("inner", "inner inner-exit");
   route("cross", "cross-in " + east);
-  if (design.schoolRight) route("school", "avenue-south school-in");
-  const prefixes = { outer: design.schoolRight ? "avenue-south avenue " : "avenue ", ...(main ? { direct: "pickup-road " } : {}), ...(auxiliary ? { merge: "pickup-road " } : {}) };
+  if (schoolOpen) route("school", "avenue-south school-in");
+  const prefixes = { outer: schoolOpen ? "avenue-south avenue " : "avenue ", ...(main ? { direct: "pickup-road " } : {}), ...(auxiliary ? { merge: "pickup-road " } : {}) };
   for (const [name, prefix] of Object.entries(prefixes)) {
     const trunk = name === "merge" ? "merge-lane downstream" : beforeSignal;
     const inbound = name === "merge" ? trunk + (slipStart ? " signal-in" : "") : toSignal;
@@ -252,10 +257,11 @@ export function sumoInputs(request, layout) {
   }
 
   for (const trip of request.trips) {
+    if (trip.origin === "ramp" && !design.lanes) continue;
     const direct = main && (!auxiliary || trip.pickupIndex % 2 === 0);
     let route = trip.origin === "ramp" ? (direct ? "direct" : "merge") : custom && trip.origin === "inner" ? "outer" : trip.origin;
     if (trip.destination === "school") {
-      if (!design.schoolRight) continue;
+      if (!schoolOpen) continue;
       route = "school";
     }
     if (trip.destination === "east") {

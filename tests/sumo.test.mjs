@@ -106,3 +106,13 @@ test("rebuilt segments export asymmetric lanes and connect both slips to lane th
   assert.doesNotMatch(cleared["routes.xml"], /route="(?:southbound|outer|direct)/);
   assert.match(cleared["routes.xml"], /route="cross"/);
 });
+
+test("rebuilding a cleared avenue does not recreate removed access roads", () => {
+  const design = { ...baseline, lanes: 0, schoolAccess: false,
+    road: [{ top: world.north, bottom: world.south, north: 1, south: 1, bend: 0 }] };
+  const request = sumoRequest(design);
+  const files = sumoInputs(request, request.edited);
+  assert.doesNotMatch(files["nodes.xml"], /id="(?:join|school-fork|slip-fork)"/);
+  assert.doesNotMatch(files["edges.xml"], /id="(?:pickup-road|school-in|slip-road)"/);
+  assert.match(files["routes.xml"], /id="outer"/);
+});

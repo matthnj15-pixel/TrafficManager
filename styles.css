@@ -110,3 +110,6 @@ button { touch-action: manipulation; }
 
 .inspector .road-presets button, .inspector .road-actions button { padding-inline: 8px; }
 .road-presets { gap: 5px; }
+.inspector-heading { justify-content: space-between; }
+.inspector-heading h1 { margin: 0; }
+.inspector .inspector-toggle { min-width: 44px; padding: 0; font-size: 22px; }
