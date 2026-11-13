@@ -95,13 +95,13 @@ export function sumoInputs(request, layout) {
     if (design.pickupYield) prohibit("avenue->approach", "pickup-road->approach");
   }
   if (auxiliary) {
-    node("taper", outer, end, design.pickupYield ? "priority" : "zipper");
-    edge("merge-lane", "join", "taper", [[world.auxiliary, join], ...taper], layout.taperSpeed, design.pickupYield ? 1 : 2);
+    node("taper", outer, end, design.taperYield ? "priority" : "zipper");
+    edge("merge-lane", "join", "taper", [[world.auxiliary, join], ...taper], layout.taperSpeed, design.taperYield ? 1 : 2);
     edge("downstream", "taper", afterTaper, [[outer, end], [outer, slipStart || signal]]);
     connect("pickup-road", "merge-lane");
     connect("approach", "downstream", { visibility: 25 });
     connect("merge-lane", "downstream", { visibility: 25 });
-    if (design.pickupYield) prohibit("approach->downstream", "merge-lane->downstream");
+    if (design.taperYield) prohibit("approach->downstream", "merge-lane->downstream");
   }
   for (const [id, dimensions] of Object.entries(request.types)) {
     const bus = id === "bus";

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { baseline, duration, step, world } from "../model.mjs";
+import { sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
 
 test("SUMO uses the same demand and exports the edited taper and lane choices", () => {
@@ -16,6 +17,15 @@ test("SUMO uses the same demand and exports the edited taper and lane choices", 
   assert.deepEqual(request.original.taper.at(-1), [world.outer, baseline.mergeEnd]);
   assert.throws(() => sumoRequest({ ...design, lanes: 0 }), /Invalid/);
   assert.throws(() => readSumoComparison(null, design), /invalid comparison/);
+});
+
+test("pickup junction and taper have independent priority in the SUMO network", () => {
+  const request = sumoRequest({ ...baseline, lanes: 3, taperYield: true });
+  const files = sumoInputs(request, request.edited);
+  assert.match(files["nodes.xml"], /id="join"[^>]*type="zipper"/);
+  assert.match(files["nodes.xml"], /id="taper"[^>]*type="priority"/);
+  assert.match(files["connections.xml"], /prohibitor="approach->downstream" prohibited="merge-lane->downstream"/);
+  assert.doesNotMatch(files["connections.xml"], /prohibited="pickup-road->approach"/);
 });
 
 test("native Eclipse SUMO runs the edited road and produces deterministic importable data", async () => {

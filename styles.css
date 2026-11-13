@@ -96,3 +96,7 @@ button { touch-action: manipulation; }
 .junction-rules button { padding-inline: 9px; }
 [data-snap] { cursor: pointer; }
 [data-snap]:focus-visible circle { stroke: #ffc578; stroke-width: 3; }
+.junction-node { cursor: pointer; }
+.junction-pin { fill: #0f4b70; stroke: #c4f8ff; stroke-width: 2.5; }
+.junction-node[aria-pressed="true"] .junction-pin { fill: #c4f8ff; stroke: #0f4b70; }
+.junction-node:focus-visible .junction-pin { stroke: #ffc578; stroke-width: 3; }

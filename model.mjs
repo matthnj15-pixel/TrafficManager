@@ -1,4 +1,4 @@
-export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, signalRight: true, schoolRight: true });
+export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, taperYield: false, signalRight: true, schoolRight: true });
 export const world = Object.freeze({
   start: { x: 448, y: 440 }, inner: 261, outer: 280, auxiliary: 302,
   signal: 180, south: 590, north: 90
@@ -21,7 +21,7 @@ export function validate(design) {
     Number.isFinite(design.entry) && design.entry >= 25 && design.entry <= 125 &&
     Number.isFinite(design.exit) && design.exit >= 20 && design.exit <= 125 &&
     [1, 2, 3].includes(design.lanes) &&
-    ["slipYield", "pickupYield", "signalRight", "schoolRight"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
+    ["slipYield", "pickupYield", "taperYield", "signalRight", "schoolRight"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
     (design.slipBend === undefined || Number.isInteger(design.slipBend) && design.slipBend >= 16 && design.slipBend <= 70) &&
     ((design.slipStart ?? 0) === 0 && (design.slipEnd ?? 0) === 0 ||
       Number.isInteger(design.slipStart) && design.slipStart >= 205 && design.slipStart <= slipStartMax(design) &&
@@ -161,6 +161,7 @@ export function normalizeDesign(design) {
     slipStart: design.slipStart ?? 0, slipEnd: design.slipEnd ?? 0,
     slipBend: design.slipBend ?? baseline.slipBend,
     slipYield: design.slipYield ?? baseline.slipYield, pickupYield: design.pickupYield ?? baseline.pickupYield,
+    taperYield: design.taperYield ?? design.pickupYield ?? baseline.taperYield,
     signalRight: design.signalRight ?? baseline.signalRight, schoolRight: design.schoolRight ?? baseline.schoolRight
   };
 }

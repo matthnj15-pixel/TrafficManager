@@ -38,6 +38,9 @@ test("road saves migrate and invalid edits cannot reach SUMO", () => {
   assert.equal(migrated.mergeEnd, 221);
   assert.equal(migrated.taperLength, taperLength);
   assert.equal(migrated.green, green);
+  const { taperYield, ...oldPrioritySave } = { ...baseline, pickupYield: true };
+  assert.equal(taperYield, false);
+  assert.equal(normalizeDesign(oldPrioritySave).taperYield, true);
   assert.ok(validate(migrated));
   assert.equal(validate({ ...baseline, lanes: 0 }), false);
   assert.equal(validate({ ...baseline, mergeEnd: 270 }), false);

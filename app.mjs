@@ -15,6 +15,7 @@ const history = [];
 const icons = {
   move: '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3"/>',
   curve: '<path d="M5 18C15 18 8 6 19 6"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>',
+  slip: '<path d="M5 22V3m0 14c5 0 4-10 16-10m-3-3 3 3-3 3"/>',
   junction: '<path d="M5 22V2m-3 3 3-3 3 3m-3 13c5 0 4-10 16-10m-3-3 3 3-3 3"/>',
   signal: '<rect x="6" y="2" width="12" height="20" rx="4"/><circle cx="12" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="17" r="1"/>',
   lanes: '<path d="M6 21V4m-3 3 3-3 3 3m4 14v-7q0-7 8-7m-3-3 3 3-3 3"/>',
@@ -34,6 +35,7 @@ let tool = "move";
 let laneSelected = false;
 let drag;
 let slipAnchor;
+let selectedJunction;
 let currentRun;
 let time = 0;
 let playing = false;
@@ -159,10 +161,10 @@ function mapMarkup(config, run, editing) {
     content += yieldSign(config.slipEnd - 16, config.slipYield ? world.signal + 23 : world.signal - 16);
   }
   if (config.pickupYield && main) content += yieldSign(selectedGeometry.end.x + 17, config.node + 17);
-  if (config.pickupYield && aux) content += yieldSign(world.auxiliary + 13, taper.end + 14);
+  if (config.taperYield && aux) content += yieldSign(world.auxiliary + 13, taper.end + 14);
   if (!config.signalRight) content += turnBan(world.outer + 14, world.signal + 23);
   if (!config.schoolRight) content += turnBan(world.outer + 15, school.start.y + 5);
-  if (editing && tool === "junction") content += junctionHandles(config);
+
   const phase = frame?.phase ?? "all-red";
   const light = (road, x, y) => {
     const color = phase === road ? "#9ee6a2" : phase === road + "-yellow" ? "#ffca74" : "#ff987d";
@@ -219,6 +221,8 @@ function mapMarkup(config, run, editing) {
       }
     }
   }
+  if (editing && tool === "slip") content += slipHandles(config);
+  if (editing && tool === "junction") content += junctionMarkers(config);
   return content;
 }
 
@@ -231,7 +235,55 @@ function turnBan(x, y) {
     <path d="M-3 3v-5h6m-2-2 2 2-2 2M-5-5 5 5" fill="none" stroke="#a13f38" stroke-width="1.4"/></g>`;
 }
 
-function junctionHandles(config) {
+function junctions(config) {
+  const { outer, signal } = world;
+  const school = schoolEntry().start;
+  const nodes = [
+    { id: "signal", name: "Alder signal", x: outer, y: signal, rule: "signalRight", label: "Right turn allowed",
+      movement: `M${outer} ${signal + 40} Q${outer} ${signal} ${outer + 54} ${signal}` },
+    { id: "pickup", name: "Pickup junction", x: outer, y: config.node,
+      rule: config.lanes & 1 ? "pickupYield" : undefined, label: "Pickup yields",
+      movement: curve(config, config.lanes & 1 ? 1 : 2).path },
+    { id: "school", name: "School access", x: school.x, y: school.y, rule: "schoolRight", label: "Right turn allowed",
+      movement: schoolEntry().path }
+  ];
+  if (config.lanes & 2) nodes.push({
+    id: "taper", name: "Merge lane end", x: outer, y: config.mergeEnd, rule: "taperYield", label: "Merge lane yields",
+    movement: mergeTaper(config).path
+  });
+  if (config.slipStart) nodes.push(
+    { id: "slip-fork", name: "Slip lane start", x: outer, y: config.slipStart, movement: slipGeometry(config).path },
+    { id: "slip-join", name: "Slip lane merge", x: config.slipEnd, y: signal, rule: "slipYield", label: "Slip lane yields",
+      movement: slipGeometry(config).path }
+  );
+  return nodes;
+}
+
+function junctionMarkers(config) {
+  const nodes = junctions(config);
+  const active = nodes.find(node => node.id === selectedJunction);
+  // Offset markers on alternate sides so nearby nodes can be tapped independently.
+  const left = new Set(["taper", "slip-fork"]);
+  return (active ? `<path d="${active.movement}" fill="none" stroke="#c4f8ff" stroke-width="3"
+    stroke-dasharray="5 3" marker-end="url(#lane-arrow)" pointer-events="none"/>` : "") + nodes.map(node => {
+    const dx = node.id === "slip-join" ? 0 : left.has(node.id) ? -23 : 23;
+    const dy = node.id === "taper" ? 17 : node.id === "slip-join" ? 23 : 0;
+    return `<g class="junction-node" data-node="${node.id}" role="button" tabindex="0"
+      aria-label="${node.name} node" aria-pressed="${node.id === selectedJunction}">
+      <path d="M${node.x} ${node.y}l${dx} ${dy}" stroke="#c4f8ff" stroke-width="2" pointer-events="none"/>
+      <circle cx="${node.x + dx}" cy="${node.y + dy}" r="19" fill="transparent"/>
+      <circle class="junction-pin" cx="${node.x + dx}" cy="${node.y + dy}" r="9"/>
+    </g>`;
+  }).join("");
+}
+
+function selectJunction(id) {
+  selectedJunction = id;
+  render();
+  map.querySelector(`[data-node="${id}"]`)?.focus();
+}
+
+function slipHandles(config) {
   if (config.slipStart) {
     const slip = slipGeometry(config);
     return `<path d="${slip.path}" fill="none" stroke="#c4f8ff" stroke-width="3"/>
@@ -285,7 +337,7 @@ function paintMap() {
     $("#original-map").innerHTML = mapMarkup(baseline, original, false);
     $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
   } else {
-    map.setAttribute("viewBox", editing && tool === "junction" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
+    map.setAttribute("viewBox", editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
     map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
   }
 }
@@ -297,13 +349,22 @@ const clock = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(second
 function renderInspector() {
   if (view === "design") {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
-    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: "Junction design" }[tool];
+    const node = tool === "junction" ? junctions(draft).find(item => item.id === selectedJunction) : undefined;
+    const title = { move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: node?.name ?? "Junctions", slip: "Draw slip lane" }[tool];
     const detail = {
       move: draft.lanes & 2
         ? 'Square moves the join. Diamond ends the lane. Triangle starts the taper. <span id="merge-length"></span>'
         : "Drag the square along Alder Avenue.",
       curve: `<span id="curve-readout">Min radius ${metric(geometry.radius)} m · ${metric(geometry.speed * 3.6)} km/h</span> · Ends aligned`,
-      junction: draft.slipStart ? "Drag the start, end, or bend of the slip lane." :
+      junction: node ? ({
+        signal: "Control turns and signal timing at this intersection.",
+        pickup: node.rule ? "Set priority where the pickup lane enters Alder Avenue." : "Pickup traffic enters its own lane here. Set priority at the merge lane end.",
+        taper: "Set priority where the auxiliary lane rejoins Alder Avenue.",
+        school: "Control the turn from Alder Avenue into the school.",
+        "slip-fork": "Traffic splits toward the signal or the slip lane.",
+        "slip-join": "Choose which approach yields where the slip lane joins the cross street."
+      })[node.id] : "Tap a node on the map to inspect its movements.",
+      slip: draft.slipStart ? "Drag the start, end, or bend of the slip lane." :
         slipAnchor === undefined ? "Tap Alder Avenue to start the slip lane." : "Tap the cross street to connect the slip lane.",
       signal: `Split the ${signalCycle}-second cycle between Alder Avenue and the cross street.`,
       lanes: laneSelected ? "Tap a receiving lane to toggle its connection." : "Tap the pickup lane to reveal its connections."
@@ -313,17 +374,14 @@ function renderInspector() {
       <button data-lane="2" aria-pressed="${!!(draft.lanes & 2)}">Merge lane</button>
     </div>` : "";
     const rule = (key, label) => `<button data-rule="${key}" aria-pressed="${draft[key]}">${label}</button>`;
-    const junction = tool === "junction" ? `<div class="row chips junction-rules">
-      ${rule("pickupYield", "Pickup yields")}
-      ${rule("signalRight", "Signal right turn")}
-      ${rule("schoolRight", "School right turn")}
-      ${draft.slipStart ? `${rule("slipYield", "Slip lane yields")}<button data-action="remove-slip">Remove slip lane</button>` : ""}
-      </div>` : "";
-    const timing = tool === "signal" ? `<div class="row spread timing"><label for="green">Alder green</label>
+    const junction = node?.rule ? `<div class="row chips junction-rules">${rule(node.rule, node.label)}</div>` : "";
+    const slip = tool === "slip" && draft.slipStart
+      ? '<div class="row chips"><button data-action="remove-slip">Remove slip lane</button></div>' : "";
+    const timing = (tool === "signal" || node?.id === "signal") ? `<div class="row spread timing"><label for="green">Alder green</label>
       <input id="green" type="range" min="${greenBounds[0]}" max="${greenBounds[1]}" value="${draft.green}"/>
       <output id="green-time" for="green"></output></div>
       <p id="cross-time"></p>` : "";
-    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${timing}${junction}<div class="row actions">
+    inspector.innerHTML = `<h1>${title}</h1><p id="detail">${detail}</p>${choices}${junction}${timing}${slip}<div class="row actions">
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
       <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button>
       <button class="primary" data-action="test">Test design</button></div>`;
@@ -465,14 +523,21 @@ function selectLaneTarget(key) {
 }
 map.addEventListener("click", event => {
   if (tool === "lanes") selectLaneTarget(event.target.closest("[data-handle]")?.dataset.handle);
+  const node = event.target.closest("[data-node]")?.dataset.node;
+  if (tool === "junction" && node) selectJunction(node);
   const snap = event.target.closest("[data-snap]")?.dataset.snap;
-  if (tool === "junction" && snap) {
+  if (tool === "slip" && snap) {
     const point = mapPoint(event);
     setSlipAnchor(snap, snap === "start" ? point.y : point.x);
   }
 });
 map.addEventListener("keydown", event => {
-  const { handle: key, snap } = event.target.dataset;
+  const { handle: key, snap, node } = event.target.dataset;
+  if (node && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    selectJunction(node);
+    return;
+  }
   if (snap && ["Enter", " "].includes(event.key)) {
     event.preventDefault();
     setSlipAnchor(snap, snap === "start" ? (205 + slipStartMax(draft)) / 2 : 386);
