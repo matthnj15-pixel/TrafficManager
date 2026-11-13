@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, networkLaneWidth, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, junctionMovements, movementKey, networkLaneWidth, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -296,6 +296,7 @@ function freeNetworkInputs(request, network) {
   const outgoing = new Map();
   const incoming = new Map();
   const edges = [], connections = [];
+  const transitions = new Map();
   const explicitJunctions = new Set();
   const usesApproachRules = node => node.control !== "traffic_light" && node.control !== "allway_stop";
   const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
@@ -326,17 +327,27 @@ function freeNetworkInputs(request, network) {
     addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA);
   }
   for (const [id, arrivals] of incoming) {
+    const node = nodes.get(id);
+    const moves = node.movements && junctionMovements(network, node);
+    if (moves?.some(move => move.rule !== "default") && usesApproachRules(node)) explicitJunctions.add(id);
     for (const from of arrivals) {
+      if (id.endsWith("-boundary")) continue;
+      const exits = [];
       for (const to of outgoing.get(id) ?? []) {
-        if (from.from === to.to && !id.endsWith("-boundary")) continue;
-        if (id.endsWith("-boundary")) continue;
-        for (let lane = 0; lane < from.count; lane++) {
+        if (from.from === to.to) continue;
+        const links = moves ? moves.filter(move => move.from === from.from && move.to === to.to) :
+          Array.from({ length: from.count }, (_, fromLane) => ({
+            fromLane, toLane: Math.min(to.count - 1, fromLane + Math.max(0, to.count - from.count))
+          }));
+        if (links.length) exits.push(to);
+        for (const { fromLane, toLane } of links) {
           connections.push(element("connection", {
-            from: from.id, to: to.id, fromLane: lane,
-            toLane: Math.min(to.count - 1, lane + Math.max(0, to.count - from.count))
+            from: from.id, to: to.id, fromLane, toLane
           }));
         }
       }
+      if (moves && !exits.length) connections.push(element("connection", { from: from.id }));
+      transitions.set(from.id, exits);
     }
   }
 
@@ -353,8 +364,8 @@ function freeNetworkInputs(request, network) {
       visited.add(edge.id);
       if (edge.id === `${destination}-out`) return path;
       if (edge.to.endsWith("-boundary")) continue;
-      for (const next of outgoing.get(edge.to) ?? []) {
-        if (next.to !== edge.from && !visited.has(next.id)) {
+      for (const next of transitions.get(edge.id) ?? []) {
+        if (!visited.has(next.id)) {
           pending.push({ edge: next, distance: distance + next.length, path: [...path, next.id] });
         }
       }
@@ -394,15 +405,54 @@ export const netconvertArgs = [
 export function configureJunctions(network, design, cycle) {
   if (!design.network) return configureSignal(network, design.green, cycle);
   const nodes = networkNodes(design.network);
-  const stopEdges = new Set();
+  const stopEdges = new Set(), directions = new Map();
   for (const [index, road] of design.network.roads.entries()) {
-    if (road.forward && road.atB === "stop" && nodes.get(road.b).control === "priority") stopEdges.add(`road-${index}-f`);
-    if (road.backward && road.atA === "stop" && nodes.get(road.a).control === "priority") stopEdges.add(`road-${index}-b`);
+    for (const [suffix, from, to, rule] of [["f", road.a, road.b, road.atB], ["b", road.b, road.a, road.atA]]) {
+      const id = `road-${index}-${suffix}`;
+      directions.set(id, { from, to });
+      const junction = nodes.get(to);
+      if (rule === "stop" && junction.control === "priority" && !junction.movements) stopEdges.add(id);
+    }
   }
-  if (!stopEdges.size) return network;
-  // SUMO's stop link state enforces a full stop before applying the junction's conflict rules.
-  return network.replace(/<connection\s[^>]+>/g, tag =>
-    stopEdges.has(attributes(tag).from) ? tag.replace(/\bstate="[^"]*"/, 'state="s"') : tag);
+  const custom = new Map(design.network.nodes.filter(node => node.control === "priority" && node.movements?.some(move => move.rule !== "default"))
+    .map(node => [node.id, new Map(node.movements.map(move => [movementKey(move), move.rule]))]));
+  if (!custom.size && !stopEdges.size) return network;
+  const byInternalLane = new Map();
+  const links = [...network.matchAll(/<connection\s[^>]+>/g)].map(([tag]) => ({ tag, ...attributes(tag) }));
+  const continuations = new Map(links.filter(link => link.from.startsWith(":") && link.via)
+    .map(link => [`${link.from}_${link.fromLane}`, link.via]));
+  for (const link of links) {
+    const from = directions.get(link.from), to = directions.get(link.to);
+    const rules = custom.get(from?.to);
+    if (!rules || !to || !link.via) continue;
+    const key = movementKey({ from: from.from, to: to.to, fromLane: link.fromLane, toLane: link.toLane });
+    const movement = { tag: link.tag, rule: rules.get(key) ?? "default" };
+    byInternalLane.set(link.via, movement);
+    if (continuations.has(link.via)) byInternalLane.set(continuations.get(link.via), movement);
+  }
+  const states = new Map();
+  const rank = { stop: 0, yield: 0, default: 1, priority: 2 };
+  const withPriority = network.replace(/<junction\s[^>]+(?<!\/)>[\s\S]*?<\/junction>/g, junction => {
+    const header = attributes(junction.slice(0, junction.indexOf(">")));
+    if (!custom.has(header.id)) return junction;
+    const links = header.intLanes.split(" ").map(lane => byInternalLane.get(lane));
+    return junction.replace(/<request\s[^>]+>/g, request => {
+      const { index, foes, response } = attributes(request);
+      const link = links[Number(index)];
+      if (!link || foes.length !== links.length) return request;
+      const updated = [...response].map((value, i) => {
+        const foe = links[links.length - 1 - i];
+        if (!foe || foes[i] !== "1" || rank[foe.rule] === rank[link.rule]) return value;
+        return rank[foe.rule] > rank[link.rule] ? "1" : "0";
+      }).join("");
+      states.set(link.tag, link.rule === "stop" ? "s" : link.rule === "yield" || updated.includes("1") ? "m" : "M");
+      return request.replace(/\bresponse="[^"]*"/, `response="${updated}"`);
+    });
+  });
+  return withPriority.replace(/<connection\s[^>]+>/g, tag => {
+    const state = states.get(tag) ?? (stopEdges.has(attributes(tag).from) ? "s" : undefined);
+    return state ? tag.replace(/\bstate="[^"]*"/, `state="${state}"`) : tag;
+  });
 }
 
 function configureSignal(network, green, cycle) {

@@ -1,6 +1,6 @@
 import { readSumoComparison, sumoRequest } from "./sumo-export.mjs";
 import { clearance } from "./sumo-network.mjs";
-import { moveNetworkNode, starterNetwork } from "./model.mjs";
+import { junctionLegs, junctionMovements, movementKey, moveNetworkNode, reconcileJunctionMovements, starterNetwork } from "./model.mjs";
 import { avenueAnchors, avenueLanePath, avenueLaneX, avenuePieces, avenueSegmentAt, avenueSegments, laneSpacing, roadPresets, selectedLane, baseline, world, curve, pointOnCurve, duration, step, validate, greenBounds, mergeEndBounds, mergeTaper, normalizeDesign, replayMarkers, scale, schoolEntry, signalCycle, slipGeometry, slipStartMax, taperLengthBounds, vehicleDimensions, networkLaneWidth, networkNodeIssue, networkNodes, networkRoadGeometry, networkRoadIssue, connectNetworkRoad, nextNetworkNode, splitNetworkRoad, scheduledTrips, terminals, trees, tripTerminals } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
@@ -20,6 +20,8 @@ const icons = {
   undo: '<path d="m8 4-5 5 5 5M3 9h11a5 5 0 0 1 0 10h-3"/>',
   redo: '<path d="m16 4 5 5-5 5m5-5H10a5 5 0 0 0 0 10h3"/>',
   erase: '<path d="m3 15 10-11a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 9H8Zm5-6 9 8m-4 4h9"/>',
+  stop: '<path d="m8 3-5 5v8l5 5h8l5-5V8l-5-5Z" fill="#ba4345" stroke="#ffe4db"/><path d="M8 12h8" stroke="white"/>',
+  yield: '<path d="M3 5h18l-9 15Z" fill="#f7e2ca" stroke="#c34743" stroke-width="3"/>',
   grid: '<path d="M4 4h16v16H4Zm0 8h16M12 4v16"/>',
   angle: '<path d="M3 19h18M3 19 16 6m-3 13a10 10 0 0 0-3-7"/>',
   reverse: '<path d="M3 8h17l-4-4m5 12H4l4 4"/>',
@@ -57,6 +59,11 @@ let freeStart;
 let freeRoad;
 let freeNode;
 let freeApproach;
+let junctionMode = "select";
+let laneStart;
+let selectedMovement;
+let movementDrag;
+let roadCamera;
 let freeDrag;
 let freeCurve = false;
 let drawLanes = { forward: 1, backward: 1 };
@@ -92,12 +99,13 @@ function editNetwork(network) {
   if (network === draft.network) return;
   if (draft.network) networkUndo.push(draft.network);
   networkRedo.length = 0;
-  draft.network = network;
+  draft.network = reconcileJunctionMovements(network);
 }
 
 function clearNetworkSelection() {
   freeStart = freeRoad = freeNode = freeApproach = demandTerminal = undefined;
   freeCurve = false;
+  laneStart = selectedMovement = undefined;
 }
 
 function save() {
@@ -555,6 +563,7 @@ function demandMarkup() {
 
 function freeNetworkMarkup(network, editing) {
   const nodes = networkNodes(network);
+  const intersection = editing && tool === "junction" && network.nodes.find(node => node.id === freeNode);
   const label = (x, y, name) => {
     const width = name.length * 7 + 12;
     return `<rect x="${x - width / 2}" y="${y - 14}" width="${width}" height="18" fill="transparent"/>
@@ -570,13 +579,18 @@ function freeNetworkMarkup(network, editing) {
         `${x - Math.sin(angle) * offset},${y + Math.cos(angle) * offset}`).join(" ");
       return `<polyline points="${points}" fill="none" stroke="${editing && index === freeRoad ? "#226581" : "#46525b"}" stroke-width="${networkLaneWidth + .5}"/>`;
     }).join("");
-    const selected = editing && index === freeRoad;
+    const selected = editing && tool === "road" && index === freeRoad;
+    const divider = Array.from({ length: road.forward + road.backward - 1 }, (_, lane) => {
+      const offset = (lane + 1 - road.backward) * networkLaneWidth;
+      const points = samples.filter((_, i) => i % 5 === 0).map(({ x, y, angle }) =>
+        `${x - Math.sin(angle) * offset},${y + Math.cos(angle) * offset}`).join(" ");
+      return `<polyline points="${points}" fill="none" stroke="${offset === 0 ? "#e6cb8d" : "#e6e9e5"}" stroke-width="1" stroke-dasharray="4 4"/>`;
+    }).join("");
     const arrows = selected ? [["forward", samples[38], 0], ["backward", samples[62], 180]].map(([direction, point, turn]) =>
       road[direction] ? `<path d="M-5-4L3 0-5 4" fill="none" stroke="#c4f8ff" stroke-width="2" pointer-events="none"
         transform="translate(${point.x} ${point.y}) rotate(${point.angle * 180 / Math.PI + turn})"/>` : "").join("") : "";
-    return `<g>${strokes}<path d="${path}" fill="none" stroke="${editing && index === freeRoad ? "#c4f8ff" : "#e6e9e5"}"
-      stroke-width="1.4" stroke-dasharray="5 5" pointer-events="none"/>${arrows}
-      ${editing && roadMode !== "draw" ? `<path d="${path}" data-free-road="${index}" role="button" tabindex="0" aria-label="Road ${index + 1}"
+    return `<g>${strokes}<g pointer-events="none">${divider}</g>${arrows}
+      ${editing && tool === "road" && roadMode !== "draw" ? `<path d="${path}" data-free-road="${index}" role="button" tabindex="0" aria-label="Road ${index + 1}"
         aria-pressed="${selected}" fill="none" stroke="transparent" stroke-width="${Math.max(25, 2 * networkLaneWidth * Math.max(road.forward, road.backward))}"/>` : ""}</g>`;
   }).join("");
   const stubs = Object.values(terminals).map(({ x, y, dx, dy }) =>
@@ -589,7 +603,7 @@ function freeNetworkMarkup(network, editing) {
       stroke-width="${Math.max(3, (drawLanes.forward + drawLanes.backward) * networkLaneWidth)}" stroke-dasharray="6 5"/>` : ""}
     <circle cx="${preview.x}" cy="${preview.y}" r="9" fill="#c4f8ff" stroke="#0f4b70" stroke-width="2"/></g>` : "";
   const selectedJunction = network.nodes.find(node => node.id === freeNode);
-  const approaches = roadMode === "select" && selectedJunction?.control === "priority" ? incomingApproaches(network, freeNode).map(approach => {
+  const approaches = tool === "road" && roadMode === "select" && selectedJunction?.control === "priority" && !selectedJunction.movements ? incomingApproaches(network, freeNode).map(approach => {
     const { x, y } = approach.point;
     return `<g class="road-target" data-approach="${approach.index}" role="button" tabindex="0"
       aria-label="${approach.label}" aria-pressed="${freeApproach === approach.index}">
@@ -598,7 +612,7 @@ function freeNetworkMarkup(network, editing) {
       <path d="M-3-3L2 0-3 3" transform="translate(${x} ${y}) rotate(${approach.angle})" stroke="${freeApproach === approach.index ? "#0f4b70" : "#c4f8ff"}"
         stroke-width="1.5" fill="none" pointer-events="none"/></g>`;
   }).join("") : "";
-  const pins = [...nodes.values()].map(node => {
+  const pins = intersection ? "" : [...nodes.values()].map(node => {
     const { id, x, y } = node;
     const active = id === freeStart || id === freeNode || id === demandTerminal;
     return `<g class="road-target" data-free-node="${id}" role="button" tabindex="0" aria-label="${node.name ? node.name + " connection" : "Junction " + id.slice(1)}">
@@ -621,7 +635,60 @@ function freeNetworkMarkup(network, editing) {
   const grid = snapping.grid && (roadMode === "draw" || freeNode && !terminals[freeNode]) ?
     '<defs><pattern id="snap-grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle r="1.3" fill="#0f4b70" opacity=".38"/></pattern></defs><rect x="8" y="68" width="484" height="554" fill="url(#snap-grid)" pointer-events="none"/>' : "";
   return grid + stubs + roads + '<defs><marker id="demand-arrow" orient="auto" markerWidth="4" markerHeight="4" refX="3.5" refY="2"><path d="M0 0L4 2L0 4Z" fill="#0f7090"/></marker></defs>'
-    + `<g data-demand-layer pointer-events="none">${demandMarkup()}</g>` + approaches + pins + previewMarkup + handles;
+    + `<g data-demand-layer pointer-events="none">${demandMarkup()}</g>` + approaches + pins + previewMarkup + handles
+    + (intersection ? intersectionMarkup(network, intersection) : "");
+}
+
+function intersectionLanes(network, node) {
+  const nodes = networkNodes(network);
+  const legs = junctionLegs(network, node.id);
+  const setback = Math.max(20, ...legs.map(leg => Math.max(leg.incoming, leg.outgoing) * networkLaneWidth + 6));
+  return legs.flatMap(leg => {
+    const geometry = networkRoadGeometry(leg.road, nodes);
+    const distance = Math.min(setback * scale, geometry.length * .62);
+    const p = pointOnCurve(geometry, leg.atA ? distance : geometry.length - distance);
+    const angle = p.angle + (leg.atA ? 0 : Math.PI);
+    const name = terminals[leg.neighbor]?.name ?? `Junction ${leg.neighbor.slice(1)}`;
+    return [["in", leg.incoming, -1], ["out", leg.outgoing, 1]].flatMap(([direction, count, side]) =>
+      Array.from({ length: count }, (_, lane) => {
+        const offset = side * (count - lane - .5) * networkLaneWidth;
+        return {
+          key: `${direction}:${leg.neighbor}:${lane}`, direction, lane, neighbor: leg.neighbor,
+          label: `${direction === "in" ? "From" : "To"} ${name}, lane ${lane + 1}`,
+          angle, x: p.x - Math.sin(angle) * offset, y: p.y + Math.cos(angle) * offset
+        };
+      }));
+  });
+}
+
+function movementPath(from, to) {
+  const reach = Math.hypot(to.x - from.x, to.y - from.y) * .36;
+  const control = point => `${point.x - Math.cos(point.angle) * reach} ${point.y - Math.sin(point.angle) * reach}`;
+  return `M${from.x} ${from.y} C${control(from)} ${control(to)} ${to.x} ${to.y}`;
+}
+
+function intersectionMarkup(network, node) {
+  const lanes = intersectionLanes(network, node);
+  const lookup = new Map(lanes.map(lane => [lane.key, lane]));
+  const links = junctionMovements(network, node).map(move => {
+    const from = lookup.get(`in:${move.from}:${move.fromLane}`), to = lookup.get(`out:${move.to}:${move.toLane}`);
+    const key = movementKey(move);
+    const active = selectedMovement === key;
+    const color = node.control === "priority" && move.rule === "stop" ? "#ff8378" :
+      node.control === "priority" && move.rule === "yield" ? "#ffcf82" : "#75e4f1";
+    const visible = !laneStart || laneStart === from.key || laneStart === to.key;
+    const path = movementPath(from, to);
+    return `<g data-lane-link="${key.replace(">", "&gt;")}" role="button" tabindex="0" aria-pressed="${active}" aria-label="${from.label} → ${to.label}">
+      <path d="${path}" fill="none" stroke="transparent" stroke-width="5" ${visible ? "" : 'pointer-events="none"'}/>
+      <path d="${path}" fill="none" stroke="${color}" stroke-width="${active ? 2.4 : 1.2}"
+        opacity="${active || visible ? 1 : .19}" marker-end="url(#movement-arrow)" pointer-events="none"/></g>`;
+  }).join("");
+  return `<defs><marker id="movement-arrow" orient="auto" markerWidth="3" markerHeight="3" refX="3" refY="1.5">
+    <path d="M0 0L3 1.5 0 3Z" fill="#c4f8ff"/></marker></defs>
+    <circle cx="${node.x}" cy="${node.y}" r="${Math.max(19, ...lanes.map(lane => Math.hypot(lane.x - node.x, lane.y - node.y) * .86))}" fill="#354a56" pointer-events="none"/>${links}<g data-movement-preview pointer-events="none"/>${lanes.map(lane =>
+    `<g data-lane-port="${lane.key}" role="button" tabindex="0" class="road-target" aria-label="${lane.label}">
+    <circle cx="${lane.x}" cy="${lane.y}" r="3.25" fill="${laneStart === lane.key ? "#fff3bb" : lane.direction === "in" ? "#7de1f2" : "#bca8f6"}"
+      stroke="#12394c" stroke-width="1"/></g>`).join("")}`;
 }
 
 function destinationCounts(id) {
@@ -656,7 +723,7 @@ function freeControls() {
   const node = draft.network.nodes.find(item => item.id === freeNode);
   const approaches = incomingApproaches(draft.network, node?.id);
   const selected = approaches.find(approach => approach.index === freeApproach);
-  const approachControls = node?.control === "priority" && approaches.length ? `<div class="row chips">
+  const approachControls = node?.control === "priority" && !node.movements && approaches.length ? `<div class="row chips">
     ${approaches.map(approach => `<button data-approach-select="${approach.index}" aria-pressed="${approach === selected}">${approach.label}</button>`).join("")}</div>
     ${selected ? `<div class="row chips" aria-label="Approach rule">${[["default", "Default"], ["priority", "Right of way"], ["yield", "Yield"], ["stop", "Stop sign"]]
       .map(([rule, label]) => `<button data-approach-rule="${rule}" aria-pressed="${selected.rule === rule}">${label}</button>`).join("")}</div>` : ""}` : "";
@@ -692,6 +759,80 @@ function freeControls() {
       <div class="lane-adjustments">${counts("backward", "left")}${counts("forward", "right")}
         ${segment ? `<button data-action="reverse-road" aria-label="Flip lane directions" title="Flip lane directions">${icon("reverse")}</button>
         <button data-action="remove-free-road" aria-label="Remove road" title="Remove road">${icon("erase")}</button>` : ""}</div>` : ""}`;
+}
+
+function intersectionControls(node) {
+  const movement = node && junctionMovements(draft.network, node).find(move => movementKey(move) === selectedMovement);
+  const buttons = [
+    ["draw", "Draw movement", "draw"], ["select", "Select movement", "select"],
+    ["undo", "Undo", null, !networkUndo.length], ["redo", "Redo", null, !networkRedo.length],
+    ["erase", "Erase movement", "erase"]
+  ];
+  const toolbar = node ? `<div class="builder-tools junction-tools" aria-label="Movement tools">${buttons.map(([symbol, label, mode, disabled]) =>
+    `<button aria-label="${label}" title="${label}" ${mode ? `data-junction-mode="${mode}" aria-pressed="${mode === junctionMode}"` :
+      `data-action="network-${symbol}"`} ${disabled ? "disabled" : ""}>${icon(symbol)}</button>`).join("")}</div>` : "";
+  const card = (symbol, label, data, active, disabled = false) =>
+    `<button ${data} aria-pressed="${active}" ${disabled ? "disabled" : ""}>${icon(symbol)}<span>${label}</span></button>`;
+  return toolbar + (node ? `<div class="junction-cards" aria-label="Intersection controls">
+    ${card("signal", "Signal", 'data-intersection-control="traffic_light"', node.control === "traffic_light")}
+    ${card("stop", "Stop", 'data-movement-rule="stop"', node.control === "priority" && movement?.rule === "stop", !movement)}
+    ${card("yield", "Yield", 'data-movement-rule="yield"', node.control === "priority" && movement?.rule === "yield", !movement)}
+    </div><div class="row chips">
+    <button data-intersection-control="priority" aria-pressed="${node.control === "priority"}">Unsignalized</button>
+    ${movement && node.control === "priority" ? `<button data-movement-rule="default" aria-pressed="${movement.rule === "default"}">Default</button>` : ""}
+    <button data-action="intersection-overview">Map overview</button></div>` : "");
+}
+
+function editJunctionNode(updates) {
+  const network = draft.network;
+  editNetwork({ ...network, nodes: network.nodes.map(node => node.id === freeNode ? { ...node, ...updates } : node) });
+}
+
+function connectMovement(end) {
+  const node = draft.network.nodes.find(item => item.id === freeNode);
+  if (!node || !laneStart) return;
+  const [, from, fromLane] = laneStart.split(":");
+  const [direction, to, toLane] = end.split(":");
+  if (direction !== "out" || from === to) return;
+  const movements = junctionMovements(draft.network, node);
+  const next = { from, to, fromLane: Number(fromLane), toLane: Number(toLane), rule: "default" };
+  selectedMovement = movementKey(next);
+  if (!movements.some(move => movementKey(move) === selectedMovement)) {
+    if (movements.length >= 256) {
+      roadMessage = "This junction already has 256 movements.";
+      return;
+    }
+    editJunctionNode({ movements: [...movements, next] });
+  }
+  laneStart = undefined;
+}
+
+function selectIntersection(id) {
+  freeNode = draft.network.nodes.some(node => node.id === id) ? id : undefined;
+  laneStart = selectedMovement = undefined;
+  junctionMode = "select";
+  roadMessage = "";
+  camera = undefined;
+}
+
+function editIntersection(target) {
+  const lane = target.closest("[data-lane-port]")?.dataset.lanePort;
+  const link = target.closest("[data-lane-link]")?.dataset.laneLink;
+  const id = target.closest("[data-free-node]")?.dataset.freeNode;
+  if (lane && junctionMode === "draw") {
+    if (lane.startsWith("in:")) laneStart = laneStart === lane ? undefined : lane;
+    else connectMovement(lane);
+  } else if (lane) {
+    laneStart = laneStart === lane ? undefined : lane;
+    selectedMovement = undefined;
+  } else if (link) {
+    if (junctionMode === "erase") {
+      const node = draft.network.nodes.find(item => item.id === freeNode);
+      editJunctionNode({ movements: junctionMovements(draft.network, node).filter(move => movementKey(move) !== link) });
+      if (selectedMovement === link) selectedMovement = undefined;
+    } else if (junctionMode === "select") selectedMovement = link;
+  } else if (id && id !== freeNode) selectIntersection(id);
+  render();
 }
 
 function laneArtwork(forward, backward, addedSide) {
@@ -899,7 +1040,9 @@ function paintMap() {
     $("#original-map").innerHTML = mapMarkup(baseline, original, false);
     $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
   } else {
-    map.setAttribute("viewBox", editing && camera ? camera.join(" ") : (editing ? draft : design).network ? "0 62 500 560" : editing && tool === "road" ? "130 55 370 810" : editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
+    const junction = editing && tool === "junction" && draft.network?.nodes.find(node => node.id === freeNode);
+    const focus = junction ? `${junction.x - 70} ${junction.y - 70} 140 140` : undefined;
+    map.setAttribute("viewBox", editing && camera ? camera.join(" ") : focus ?? ((editing ? draft : design).network ? "0 62 500 560" : editing && tool === "road" ? "130 55 370 810" : editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700"));
     map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
   }
 }
@@ -912,7 +1055,7 @@ function renderInspector() {
   if (view === "design") {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
     const node = tool === "junction" ? junctions(draft).find(item => item.id === selectedJunction) : undefined;
-    const title = draft.network ? "Road Builder" : { road: "Road Builder", move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: node?.name ?? "Junctions", slip: "Draw slip lane" }[tool];
+    const title = draft.network ? tool === "junction" ? "Intersections" : "Road Builder" : { road: "Road Builder", move: "Move node", curve: "Adjust curve", lanes: "Connect lanes", signal: "Signal timing", junction: node?.name ?? "Junctions", slip: "Draw slip lane" }[tool];
     const collapse = `<button class="inspector-toggle" data-action="toggle-inspector"
       aria-label="${inspectorCollapsed ? "Expand" : "Minimize"} design panel" aria-expanded="${!inspectorCollapsed}">${inspectorCollapsed ? "⌃" : "⌄"}</button>`;
     const heading = `<div class="row inspector-heading"><h1>${title}</h1>${collapse}</div>`;
@@ -921,15 +1064,23 @@ function renderInspector() {
       return;
     }
     if (draft.network) {
+      const editingIntersection = tool === "junction";
+      const intersection = draft.network.nodes.find(item => item.id === freeNode);
       const destinations = demandTerminal ? destinationCounts(demandTerminal) : [];
       const demand = demandTerminal ? `<div class="terminal-demand" role="status"><strong>From ${terminals[demandTerminal].name}</strong>
         <p>${destinations.length ? destinations.map(([id, count]) => `${terminals[id].name} · ${count} trips`).join(" / ") : "Arrival only"}</p></div>` : "";
-      const detail = roadMode === "draw" ? "Drag between nodes or tap two endpoints." :
+      const detail = editingIntersection ? (!intersection ? "Select a junction on the map." :
+        junctionMode === "draw" ? "Connect a blue incoming lane to a purple outgoing lane." :
+        junctionMode === "erase" ? "Tap an arrow to disallow that movement." : "Tap a movement to set its rule.") :
+        roadMode === "draw" ? "Drag between nodes or tap two endpoints." :
         roadMode === "split" ? "Tap the map or a road to add a node." :
         freeCurve ? "Drag either handle to shape the curve." :
         freeNode && !terminals[freeNode] ? "Drag the selected node to move it." :
         freeRoad !== undefined ? "Choose lanes or turn on curve handles." : "Select a segment or node.";
-      inspector.innerHTML = `${heading}<p id="detail">${roadMessage || detail}</p>${demand}${freeControls()}
+      inspector.innerHTML = `${heading}<div class="editor-switch" aria-label="Network editors">
+        <button data-tool="road" aria-pressed="${!editingIntersection}">Road Builder</button>
+        <button data-tool="junction" aria-pressed="${editingIntersection}">Intersections</button></div>
+        <p id="detail">${roadMessage || detail}</p>${demand}${editingIntersection ? intersectionControls(intersection) : freeControls()}
         <div class="row actions"><button data-action="cancel" ${changed() ? "" : "disabled"}>Cancel</button>
         <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button><button class="primary" data-action="test">Test design</button></div>`;
       return;
@@ -1023,7 +1174,7 @@ function render() {
   $(".tools").hidden = view !== "design" || !!draft.network;
   map.classList.toggle("network-edit", view === "design" && !!draft.network);
   $('[data-action="new-builder"]').hidden = !!draft.network;
-  for (const button of document.querySelectorAll("[data-tool]")) {
+  for (const button of document.querySelectorAll(".tools [data-tool]")) {
     button.hidden = !!draft.network && !["road", "junction"].includes(button.dataset.tool);
   }
   paintMap();
@@ -1090,6 +1241,11 @@ map.addEventListener("pointerdown", event => {
   mapPointers.set(event.pointerId, event);
   if (mapPointers.size === 1 && event.target.closest("[role=button], [data-handle]")) return;
   if (mapPointers.size > 1) {
+    if (movementDrag) {
+      movementDrag = undefined;
+      laneStart = undefined;
+      paintMap();
+    }
     if (freeDrag) {
       clearTimeout(terminalHold);
       if (freeDrag.moved) freeStart = freeDrag.previousStart;
@@ -1245,7 +1401,7 @@ function handleRoadTarget(target, y) {
 map.addEventListener("pointerdown", event => {
   const id = event.target.closest("[data-free-node]")?.dataset.freeNode;
   const handle = event.target.closest("[data-curve-handle]")?.dataset.curveHandle;
-  if (!draft.network || view !== "design" || (!id && handle === undefined) || event.button !== 0) return;
+  if (!draft.network || tool !== "road" || view !== "design" || (!id && handle === undefined) || event.button !== 0) return;
   const kind = handle !== undefined ? "curve" : roadMode === "draw" ? "draw" :
     roadMode === "select" && id === freeNode && !terminals[id] ? "move" : undefined;
   if (!kind && !terminals[id]) return;
@@ -1324,10 +1480,49 @@ for (const type of ["contextmenu", "selectstart", "dragstart"]) {
   map.addEventListener(type, event => event.preventDefault());
 }
 
+map.addEventListener("pointerdown", event => {
+  if (!draft.network || tool !== "junction" || junctionMode !== "draw" || view !== "design" || event.button !== 0) return;
+  const port = event.target.closest("[data-lane-port]");
+  if (!port?.dataset.lanePort.startsWith("in:")) return;
+  const circle = port.querySelector("circle");
+  movementDrag = { id: event.pointerId, lane: port.dataset.lanePort, x: event.clientX, y: event.clientY,
+    start: { x: circle.cx.baseVal.value, y: circle.cy.baseVal.value } };
+});
+map.addEventListener("pointermove", event => {
+  if (movementDrag?.id !== event.pointerId || Math.hypot(event.clientX - movementDrag.x, event.clientY - movementDrag.y) < 5) return;
+  if (!map.hasPointerCapture(event.pointerId)) map.setPointerCapture(event.pointerId);
+  laneStart = movementDrag.lane;
+  const point = mapPoint(event);
+  movementDrag.point = point;
+  const { start } = movementDrag;
+  const layer = $("[data-movement-preview]");
+  layer.innerHTML = `<path d="M${start.x} ${start.y}L${point.x} ${point.y}"
+    stroke="#b3efff" stroke-width="1.5" stroke-dasharray="2 2"/>`;
+});
+for (const type of ["pointerup", "pointercancel"]) {
+  map.addEventListener(type, event => {
+    if (movementDrag?.id !== event.pointerId) return;
+    const moved = movementDrag.point;
+    movementDrag = undefined;
+    if (!moved) return;
+    suppressMapClick = true;
+    const point = mapPoint(event);
+    const node = draft.network.nodes.find(item => item.id === freeNode);
+    const nearest = intersectionLanes(draft.network, node).filter(lane => lane.direction === "out")
+      .map(lane => ({ ...lane, distance: Math.hypot(lane.x - point.x, lane.y - point.y) }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    const end = nearest?.distance <= 8 / map.getScreenCTM().a ? nearest.key : undefined;
+    if (type === "pointerup" && end?.startsWith("out:")) connectMovement(end);
+    else laneStart = undefined;
+    render();
+  });
+}
+
 map.addEventListener("click", event => {
   if (draft.network && view === "design") {
     demandTerminal = undefined;
-    editFreeMap(event.target, mapPoint(event));
+    if (tool === "junction") editIntersection(event.target);
+    else editFreeMap(event.target, mapPoint(event));
     return;
   }
   if (tool === "road") handleRoadTarget(event.target, mapPoint(event).y);
@@ -1354,6 +1549,10 @@ map.addEventListener("keydown", event => {
   }
   if (draft.network && ["Enter", " "].includes(event.key)) {
     event.preventDefault();
+    if (tool === "junction") {
+      editIntersection(event.target);
+      return;
+    }
     const id = event.target.dataset.freeNode;
     if (event.key === " " && terminals[id]) {
       demandTerminal = id;
@@ -1439,7 +1638,18 @@ document.addEventListener("click", event => {
   if (!button) return;
   const { tool: nextTool, view: nextView, action, lane, rule, roadMode: nextRoadMode, roadPreset, roadCount, movement } = button.dataset;
   if (nextTool) {
-    if (draft.network && nextTool === "junction") roadMode = "select";
+    if (draft.network && tool !== nextTool) {
+      if (nextTool === "junction") {
+        roadCamera = camera;
+        const selected = freeNode;
+        clearNetworkSelection();
+        selectIntersection(selected);
+      } else {
+        clearNetworkSelection();
+        camera = roadCamera;
+        roadMessage = "";
+      }
+    }
     slipAnchor = undefined;
     tool = nextTool;
     if (nextTool === "road" && draft.road?.length === 0) roadMode = "draw";
@@ -1485,8 +1695,29 @@ document.addEventListener("click", event => {
     if (!from.length) return;
     to.push(draft.network);
     draft.network = from.pop();
-    clearNetworkSelection();
+    if (tool === "junction") {
+      laneStart = selectedMovement = undefined;
+      if (!draft.network.nodes.some(node => node.id === freeNode)) selectIntersection();
+    } else clearNetworkSelection();
     roadMessage = "";
+    render();
+  } else if (button.dataset.junctionMode) {
+    junctionMode = button.dataset.junctionMode;
+    laneStart = undefined;
+    roadMessage = "";
+    render();
+  } else if (action === "intersection-overview") {
+    selectIntersection();
+    render();
+  } else if (button.dataset.intersectionControl) {
+    const node = draft.network.nodes.find(item => item.id === freeNode);
+    if (node.control !== button.dataset.intersectionControl) editJunctionNode({ control: button.dataset.intersectionControl });
+    render();
+  } else if (button.dataset.movementRule) {
+    const node = draft.network.nodes.find(item => item.id === freeNode);
+    const moves = junctionMovements(draft.network, node);
+    const rule = button.dataset.movementRule;
+    editJunctionNode({ control: "priority", movements: moves.map(move => movementKey(move) === selectedMovement ? { ...move, rule } : move) });
     render();
   } else if (action === "clear-map") {
     editNetwork({ nodes: [], roads: [] });

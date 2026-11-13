@@ -138,6 +138,14 @@ button { touch-action: manipulation; }
 .lane-count button:first-child { display: flex; align-items: center; gap: 4px; font-size: .74rem; }
 .lane-count button:last-child { min-width: 27px; padding: 0 5px; }
 .lane-count svg { width: 26px; height: 24px; }
+.editor-switch { display: flex; gap: 5px; margin: 4px 0 7px; }
+.editor-switch button { flex: 1; min-height: 37px; font-size: .82rem; }
+.junction-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 7px; }
+.junction-cards button { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 5px; font-size: .82rem; }
+.junction-cards svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.junction-tools button:nth-child(4) { flex: 1; margin: 0; }
+[data-lane-link] { cursor: pointer; }
+[data-lane-link]:focus-visible path:last-child { stroke: white; stroke-width: 3; }
 #map.network-edit {
   position: absolute;
   top: max(64px, calc(env(safe-area-inset-top) + 60px));

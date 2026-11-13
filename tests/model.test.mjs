@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baseline, connectNetworkRoad, curve, mergeTaper, moveNetworkNode, networkNodes, networkRoadGeometry, normalizeDesign, pointOnCurve, starterNetwork, validate } from "../model.mjs";
+import { baseline, connectNetworkRoad, curve, junctionMovements, mergeTaper, moveNetworkNode, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
+
+test("splitting a road keeps movement rules attached to the original intersection", () => {
+  const network = starterNetwork();
+  const junction = network.nodes[0];
+  junction.movements = junctionMovements(network, junction).filter(move => move.from === "west" && move.to === "east")
+    .map(move => ({ ...move, rule: "stop" }));
+  const split = nextNetworkNode(network, { x: 155, y: 180 });
+  const { network: edited, issue } = splitNetworkRoad(network, 1, split, .5);
+  assert.ok(edited, issue);
+  assert.deepEqual(edited.nodes[0].movements, [{ from: split.id, to: "east", fromLane: 0, toLane: 0, rule: "stop" }]);
+  assert.ok(validate({ ...baseline, network: edited }));
+});
 
 test("crossing roads share a junction and preserve curves, lanes, and endpoint rules", () => {
   const avenue = { a: "north", b: "south", forward: 1, backward: 2, bend: 12, atA: "stop", atB: "priority" };

@@ -292,6 +292,52 @@ export function networkNodes(network) {
   return new Map([...Object.values(terminals), ...network.nodes].map(node => [node.id, node]));
 }
 
+export const movementKey = ({ from, to, fromLane, toLane }) => `${from}:${fromLane}>${to}:${toLane}`;
+
+export function junctionLegs(network, id) {
+  return network.roads.flatMap((road, index) => {
+    const atA = road.a === id;
+    if (!atA && road.b !== id) return [];
+    return [{
+      neighbor: atA ? road.b : road.a, road, index, atA,
+      incoming: atA ? road.backward : road.forward,
+      outgoing: atA ? road.forward : road.backward,
+      rule: (atA ? road.atA : road.atB) ?? "default"
+    }];
+  });
+}
+
+export function junctionMovements(network, node) {
+  if (node.movements) return node.movements;
+  const legs = junctionLegs(network, node.id);
+  return legs.flatMap(from => legs.filter(to => to !== from && to.outgoing).flatMap(to =>
+    Array.from({ length: from.incoming }, (_, fromLane) => ({
+      from: from.neighbor, to: to.neighbor, fromLane,
+      toLane: Math.min(to.outgoing - 1, fromLane + Math.max(0, to.outgoing - from.incoming)),
+      rule: from.rule
+    }))));
+}
+
+function validMovement(movement, legs) {
+  if (!movement || movement.from === movement.to || !["default", "priority", "stop", "yield"].includes(movement.rule)) return false;
+  const from = legs.get(movement.from), to = legs.get(movement.to);
+  return Number.isInteger(movement.fromLane) && movement.fromLane >= 0 && movement.fromLane < from?.incoming &&
+    Number.isInteger(movement.toLane) && movement.toLane >= 0 && movement.toLane < to?.outgoing;
+}
+
+export function reconcileJunctionMovements(network) {
+  let changed = false;
+  const nodes = network.nodes.map(node => {
+    if (!node.movements) return node;
+    const legs = new Map(junctionLegs(network, node.id).map(leg => [leg.neighbor, leg]));
+    const movements = node.movements.filter(movement => validMovement(movement, legs));
+    if (movements.length === node.movements.length) return node;
+    changed = true;
+    return { ...node, movements };
+  });
+  return changed ? { ...network, nodes } : network;
+}
+
 export function networkRoadGeometry(road, nodes) {
   const start = nodes.get(road.a), end = nodes.get(road.b);
   const dx = end.x - start.x, dy = end.y - start.y;
@@ -417,7 +463,19 @@ export function splitNetworkRoad(network, index, node, t) {
   const nodes = networkNodes(network);
   const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
   const roads = network.roads.flatMap((road, i) => i === index ? parts : road);
-  return checkNetworkEdit({ nodes: [...network.nodes, node], roads }, network.roads);
+  const nodesWithMoves = remapSplitMovements([...network.nodes, node], network.roads[index], parts);
+  return checkNetworkEdit({ nodes: nodesWithMoves, roads }, network.roads);
+}
+
+function remapSplitMovements(nodes, road, parts) {
+  if (parts.length === 1) return nodes;
+  return nodes.map(node => {
+    if (!node.movements || node.id !== road.a && node.id !== road.b) return node;
+    const [before, after] = node.id === road.a ? [road.b, parts[0].b] : [road.a, parts.at(-1).a];
+    return { ...node, movements: node.movements.map(move => ({
+      ...move, from: move.from === before ? after : move.from, to: move.to === before ? after : move.to
+    })) };
+  });
 }
 
 export function moveNetworkNode(network, id, point, targetId, roadTarget) {
@@ -436,12 +494,21 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
     const road = network.roads[roadTarget.index];
     const parts = splitRoad(road, networkNodes(network), [{ node: { ...node, ...point }, t: roadTarget.t }]);
     next.roads = next.roads.flatMap(item => item === road ? parts : item);
+    next.nodes = remapSplitMovements(next.nodes, road, parts);
     const result = checkNetworkEdit(next, network.roads);
     if (result.issue) return result;
   }
   for (const road of attached) {
     const atStart = road.a === id;
     const moved = { ...road, [atStart ? "a" : "b"]: targetId ?? id };
+    if (targetId) {
+      const other = atStart ? road.b : road.a;
+      next.nodes = next.nodes.map(item => item.id !== other || !item.movements ? item : {
+        ...item, movements: item.movements.map(move => ({
+          ...move, from: move.from === id ? targetId : move.from, to: move.to === id ? targetId : move.to
+        }))
+      });
+    }
     if (road.controls) {
       moved.controls = [...road.controls];
       const offset = atStart ? 0 : 2;
@@ -487,10 +554,15 @@ export function connectNetworkRoad(network, road, replace = -1) {
       }
     }
   }
-  const roads = network.roads.flatMap((other, i) =>
-    i === replace ? splitRoad(road, nodes, cuts) : splitRoad(other, nodes, otherCuts.get(i) ?? []));
-  if (replace < 0) roads.push(...splitRoad(road, nodes, cuts));
-  return checkNetworkEdit({ nodes: addedNodes, roads }, network.roads);
+  let updatedNodes = addedNodes;
+  const split = (item, hits) => {
+    const parts = splitRoad(item, nodes, hits);
+    updatedNodes = remapSplitMovements(updatedNodes, item, parts);
+    return parts;
+  };
+  const roads = network.roads.flatMap((other, i) => i === replace ? split(road, cuts) : split(other, otherCuts.get(i) ?? []));
+  if (replace < 0) roads.push(...split(road, cuts));
+  return checkNetworkEdit({ nodes: updatedNodes, roads }, network.roads);
 }
 
 function validNetwork(network) {
@@ -502,10 +574,17 @@ function validNetwork(network) {
         !Number.isFinite(node.x) || !Number.isFinite(node.y) || networkNodeIssue(node) || !["priority", "allway_stop", "traffic_light"].includes(node.control)) return false;
     ids.add(node.id);
   }
-  return network.roads.every((road, index) => road && ids.has(road.a) && ids.has(road.b) &&
+  const validRoads = network.roads.every((road, index) => road && ids.has(road.a) && ids.has(road.b) &&
     [road.forward, road.backward].every(count => Number.isInteger(count) && count >= 0 && count <= 4) &&
     road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
     (road.controls === undefined || Array.isArray(road.controls) && road.controls.length === 4 && road.controls.every(Number.isFinite)) &&
     [road.atA, road.atB].every(rule => rule === undefined || ["default", "priority", "yield", "stop"].includes(rule)) &&
     !networkRoadIssue(network, road, index));
+  return validRoads && network.nodes.every(node => {
+    if (node.movements === undefined) return true;
+    if (!Array.isArray(node.movements) || node.movements.length > 256) return false;
+    const legs = new Map(junctionLegs(network, node.id).map(leg => [leg.neighbor, leg]));
+    return node.movements.every(movement => validMovement(movement, legs)) &&
+      new Set(node.movements.map(movementKey)).size === node.movements.length;
+  });
 }

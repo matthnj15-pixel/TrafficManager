@@ -4,9 +4,48 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, duration, step, world } from "../model.mjs";
+import { avenueSegments, baseline, duration, junctionMovements, starterNetwork, step, world } from "../model.mjs";
 import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
+
+test("SUMO enforces movement permissions and distinct rules on the same incoming lane", async () => {
+  const network = starterNetwork();
+  const junction = network.nodes[0];
+  junction.movements = junctionMovements(network, junction).filter(move => move.from !== "east" && !(move.from === "west" && move.to === "east"));
+  const signalRequest = sumoRequest({ ...baseline, network });
+  const signalFiles = sumoInputs(signalRequest, signalRequest.edited);
+  assert.doesNotMatch(signalFiles["routes.xml"], /west-to-east/);
+  const dir = await mkdtemp(join(tmpdir(), "traffic-movements-"));
+  const run = (command, args) => {
+    const result = spawnSync(command, args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  const convert = async files => {
+    for (const [name, contents] of Object.entries(files)) await writeFile(join(dir, name), contents);
+    run("netconvert", netconvertArgs);
+    return readFile(join(dir, "corridor.net.xml"), "utf8");
+  };
+  try {
+    const signal = await convert(signalFiles);
+    assert.match(signal, /<tlLogic id="j1"/);
+    assert.doesNotMatch(signal, /<connection from="road-1-f" to="road-2-f"/);
+    assert.doesNotMatch(signal, /<connection from="road-2-b"/);
+    junction.control = "priority";
+    junction.movements.push({ from: "west", fromLane: 0, to: "east", toLane: 0, rule: "stop" });
+    junction.movements.find(move => move.from === "west" && move.to === "north").rule = "yield";
+    const request = sumoRequest({ ...baseline, network });
+    const files = sumoInputs(request, request.edited);
+    assert.match(files["routes.xml"], /west-to-east/);
+    const adjusted = configureJunctions(await convert(files), request.edited.design, request.signalCycle);
+    assert.match(adjusted, /<connection from="road-1-f" to="road-2-f" fromLane="0"[^>]+state="s"/);
+    assert.match(adjusted, /<connection from="road-1-f" to="road-0-b" fromLane="0"[^>]+state="m"/);
+    await writeFile(join(dir, "corridor.net.xml"), adjusted);
+    run("sumo", sumoArgs(request));
+    assert.doesNotMatch(await readFile(join(dir, "collisions.xml"), "utf8"), /<collision /);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("SUMO uses the same demand and exports the edited taper and lane choices", () => {
   const design = { ...baseline, lanes: 2, mergeEnd: 241, taperLength: 50, green: 26 };
