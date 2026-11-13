@@ -28,9 +28,37 @@ tested_revision() {
   done <<< "$successful"
 }
 
+sumo_artifact() {
+  local branch=$1 revision=$2
+  gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs" \
+    -f branch="$branch" -f head_sha="$revision" -F per_page=30 \
+    --jq '.workflow_runs[] | select(.event == "push" and .conclusion == "success") | .id' |
+    sed -n '1p'
+}
+
 publish() {
-  local revision=$1 directory=$2 asset
+  local revision=$1 directory=$2 branch=$3 asset run
   mkdir -p -- "$directory"
+  if git cat-file -e "$revision:sumo-worker.mjs" 2>/dev/null; then
+    if [[ ${PAGES_TESTED_ONLY:-0} == 1 ]]; then
+      run=$(sumo_artifact "$branch" "$revision")
+      if [[ -z $run ]] || ! gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+        --name sumo-wasm --dir "$directory/sumo-wasm"; then
+        echo "Skipping $branch because its tested SUMO assets are unavailable."
+        if [[ $branch == main ]]; then return 1; fi
+        return 0
+      fi
+    else
+      mkdir -p "$directory/sumo-wasm"
+      cp -R "${PAGES_SUMO_WASM_DIR:-sumo-wasm}/." "$directory/sumo-wasm"
+    fi
+    for asset in netconvert.mjs netconvert.wasm sumo.mjs sumo.wasm; do
+      test -s "$directory/sumo-wasm/$asset"
+    done
+    for asset in sumo-network.mjs sumo-worker.mjs; do
+      git show "$revision:$asset" > "$directory/$asset"
+    done
+  fi
   for asset in "${assets[@]}"; do
     git show "$revision:$asset" > "$directory/$asset"
   done
@@ -52,7 +80,7 @@ if [[ -z $stable ]] || ! git show "$stable:sw.js" | grep 'Pages revision' >/dev/
   echo "No Pages-ready tested revision is available on main." >&2
   exit 1
 fi
-publish "$stable" "$output"
+publish "$stable" "$output" main
 while IFS= read -r ref; do
   branch=${ref#refs/remotes/origin/}
   if [[ $branch != develop && ! $branch =~ ^playtest/[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
@@ -64,5 +92,5 @@ while IFS= read -r ref; do
     echo "Skipping $branch until a Pages-ready revision passes its tests."
     continue
   fi
-  publish "$revision" "$output/previews/$branch"
+  publish "$revision" "$output/previews/$branch" "$branch"
 done < <(git for-each-ref --format='%(refname)' refs/remotes/origin/develop refs/remotes/origin/playtest)
