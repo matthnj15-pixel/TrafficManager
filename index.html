@@ -13,12 +13,27 @@
 <body>
 <main class="game">
   <svg id="map" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid meet" aria-label="School pickup road map"></svg>
+  <section id="comparison" class="comparison" aria-label="Simulation comparison" hidden>
+    <figure class="comparison-panel">
+      <figcaption><strong>Original</strong><output id="original-stats"></output></figcaption>
+      <svg id="original-map" viewBox="218 135 256 332" aria-label="Original simulation map"></svg>
+    </figure>
+    <figure class="comparison-panel">
+      <figcaption><strong>Your design</strong><output id="design-stats"></output></figcaption>
+      <svg id="design-map" viewBox="218 135 256 332" aria-label="Your design simulation map"></svg>
+    </figure>
+  </section>
   <header>
     <div class="glass title"><span class="scenario">School pickup</span><span id="subtitle">Make room for pickup traffic.</span></div>
     <button id="menu" class="glass round" aria-label="Menu" aria-expanded="false">•••</button>
   </header>
   <div id="menu-panel" class="glass menu-panel" hidden>
     <span id="offline">Preparing offline play…</span>
+    <button id="export-sumo" type="button">Export designs for SUMO</button>
+    <button id="import-sumo" type="button">Open SUMO results</button>
+    <input id="sumo-file" type="file" accept=".json,application/json" hidden>
+    <button id="use-built-in" type="button" hidden>Use built-in engine</button>
+    <span id="sumo-status" role="status" hidden></span>
     <button id="reset" type="button">Restore original design</button>
   </div>
   <aside class="glass tools" aria-label="Road tools">
@@ -28,7 +43,7 @@
   </aside>
   <section id="inspector" class="glass inspector" aria-label="Design controls"></section>
   <nav class="glass tabs" aria-label="Game views">
-    <button data-view="design">Design</button><button data-view="replay">Replay</button><button data-view="results">Results</button>
+    <button data-view="design">Design</button><button data-view="simulate">Simulate</button><button data-view="results">Results</button>
   </nav>
 </main>
 <script type="module" src="./app.mjs"></script>

@@ -12,10 +12,17 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install eclipse-sumo==1.28.0 sumo-data==1.28.0
+      - run: npm run test:sumo
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+        env:
+          TRAFFIC_TEST_SUMO: '1'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mobile-playtest-screens
-          path: test-results/
+          path: test-results/*.png

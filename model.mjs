@@ -110,7 +110,7 @@ export function signalIsGreen(time) {
   return time % 34 < 21;
 }
 
-function arrivals() {
+export function arrivals() {
   const trips = [];
   for (let i = 0; i < 48; i++) {
     trips.push({ time: 1 + i * 4.0 + (i % 3) * 0.28, kind: i % 12 === 5 ? "bus" : "car", origin: i % 4 === 0 ? "inner" : "outer" });

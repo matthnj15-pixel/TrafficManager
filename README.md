@@ -16,16 +16,31 @@ Run `npm start` and open http://127.0.0.1:4173. The game itself requires no depe
 
 - In **Design**, drag the square merge node along Alder Avenue, or select **Adjust curve** and drag either round handle. The handles keep the curve aligned with the adjoining roads.
 - Select **Connect lanes** and tap the pickup lane. Toggle the main lane and auxiliary merge lane. With the merge lane enabled, select **Move node** and drag the diamond to change where it ends. Apply edits to save them locally, or undo the last applied design.
-- In **Replay**, switch between the original and edited design. The arrivals are identical. Amber vehicles are waiting on traffic, a gap, or a signal.
+- In **Simulate**, watch the original and edited road side by side with the same arrivals and clock. Tap **Compare** for the single-map view, or **Worst backup** to pause at the edited design’s peak queue. Amber highlights show queued vehicles.
 - **Results** compares bus delay, longest queue, and completed and unfinished trips. The top-right menu can restore the original layout.
 
 The service worker caches the playtest after the first visit over HTTPS or localhost. Open the menu to check when offline play is ready. On an iPhone, Home Screen installation requires serving the game over HTTPS. The save belongs to that browser and origin.
+
+## Compare with Eclipse SUMO
+
+1. In the game menu, choose **Export designs for SUMO** after applying your edits.
+2. On a desktop with Python, install the pinned native engine and run the comparison from this checkout.
+
+   ```sh
+   python3 -m pip install eclipse-sumo==1.28.0 sumo-data==1.28.0
+   python3 scripts/run-sumo.py /path/to/traffic-manager-sumo-request.json /path/to/sumo-results.json
+   ```
+
+3. In the game menu, choose **Open SUMO results** and select the generated file. Both panes use that engine’s vehicle positions and trip data. The Results tab shows reported collisions. Choose **Use built-in engine** to return to the local simulator.
+
+The desktop runner generates a SUMO network from the corridor’s lane connections, curve, taper, and signal, then runs the original and edited designs with the same departure schedule. It uses the direct curve as the shared pickup approach when both connections are enabled and lets SUMO generate internal junction geometry. Imported SUMO comparisons are session-only and tied to the exact exported design. The installed web app simulates edits offline with the built-in engine and can open an existing SUMO results file offline.
 
 ## Verify
 
 ```sh
 npm ci
 npm test
+npm run test:sumo # With native SUMO installed
 npx playwright install chromium
 npm run test:browser
 ```

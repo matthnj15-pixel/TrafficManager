@@ -34,6 +34,10 @@ publish() {
   for asset in "${assets[@]}"; do
     git show "$revision:$asset" > "$directory/$asset"
   done
+  # Older published branches predate the SUMO import/export module.
+  if git cat-file -e "$revision:sumo-export.mjs" 2>/dev/null; then
+    git show "$revision:sumo-export.mjs" > "$directory/sumo-export.mjs"
+  fi
   # A revision change must also change the service worker, even if sw.js
   # itself was untouched, so an installed app caches the next release.
   sed -i "s|/\* Pages revision \*/ \"local-2\"|/* Pages revision */ \"$revision\"|" "$directory/sw.js"

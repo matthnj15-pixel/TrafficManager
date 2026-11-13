@@ -1,3 +1,4 @@
+import { readSumoComparison, sumoRequest } from "./sumo-export.mjs";
 import { baseline, world, curve, simulate, duration, step, validate, mergeEndBounds, mergeTaper, replayMarkers, scale, vehicleDimensions } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
@@ -7,14 +8,15 @@ const appPath = new URL(".", import.meta.url).pathname;
 const storageKey = appPath.includes("/previews/")
   ? `traffic-manager.school-pickup.v1:${appPath}`
   : "traffic-manager.school-pickup.v1";
-const original = simulate(baseline);
+let original;
+let originalBuiltIn;
 const history = [];
 const icons = {
   move: '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3"/>',
   curve: '<path d="M5 18C15 18 8 6 19 6"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="6" r="2"/>',
   lanes: '<path d="M6 21V4m-3 3 3-3 3 3m4 14v-7q0-7 8-7m-3-3 3 3-3 3"/>',
   design: '<path d="m3 9 9-5 9 5-9 5zm0 4 9 5 9-5M3 17l9 5 9-5"/>',
-  replay: '<path d="m7 4 14 8-14 8z"/>',
+  simulate: '<path d="m7 4 14 8-14 8z"/>',
   results: '<path d="M5 20v-7m7 7V4m7 16V9"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
@@ -30,7 +32,9 @@ let drag;
 let currentRun;
 let time = 0;
 let playing = false;
-let showingOriginal = false;
+let comparing = true;
+let sumoComparison;
+let highlightQueues = false;
 let previousFrame = 0;
 let animationId;
 
@@ -114,16 +118,13 @@ function handle(kind, x, y, selected = true) {
   </g>`;
 }
 
-function paintMap() {
-  const editing = view === "design";
-  const config = editing ? draft : showingOriginal ? baseline : design;
+function mapMarkup(config, run, editing) {
   const primary = curve(config, 1);
   const secondary = curve(config, 2);
   const main = config.lanes & 1;
   const aux = config.lanes & 2;
   const selectedGeometry = main ? primary : secondary;
-  const run = showingOriginal ? original : currentRun;
-  const frame = run?.frames[Math.floor(time / step)];
+  const frame = run?.frames[Math.floor(time / step + 1e-8)];
   let content = scenery + avenue;
   const taper = mergeTaper(config);
   if (aux) {
@@ -145,7 +146,10 @@ function paintMap() {
       const length = metres / scale;
       const halfWidth = width / scale / 2;
       const fill = car.reason ? "#ffc578" : car.kind === "bus" ? "#b9f8ff" : "#e4e9e4";
-      return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})"><title>${car.reason || (car.kind === "bus" ? "School bus" : "Moving")}</title>
+      const ring = highlightQueues && car.reason
+        ? `<rect x="${-length / 2 - 1}" y="${-halfWidth - 1}" width="${length + 2}" height="${halfWidth * 2 + 2}" rx="2" fill="none" stroke="#ffab49" stroke-width="1"/>`
+        : "";
+      return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})">${ring}
         <rect x="${-length / 2}" y="${-halfWidth}" width="${length}" height="${halfWidth * 2}" rx="1.7" fill="${fill}"/>
         <rect x="${length / 2 - 2.5}" y="${-halfWidth * .65}" width="1.5" height="${halfWidth * 1.3}" rx=".4" fill="#416270"/></g>`;
     }).join("");
@@ -182,9 +186,21 @@ function paintMap() {
       }
     }
   }
-  const zoom = tool === "lanes" && view === "design" ? "145 145 340 476" : "0 0 500 700";
-  map.setAttribute("viewBox", zoom);
-  map.innerHTML = content;
+  return content;
+}
+
+function paintMap() {
+  const editing = view === "design";
+  const split = view === "simulate" && comparing;
+  map.toggleAttribute("hidden", split);
+  $("#comparison").hidden = !split;
+  if (split) {
+    $("#original-map").innerHTML = mapMarkup(baseline, original, false);
+    $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
+  } else {
+    map.setAttribute("viewBox", editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700");
+    map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
+  }
 }
 
 const changed = () => Object.keys(baseline).some(key => design[key] !== draft[key]);
@@ -210,12 +226,13 @@ function renderInspector() {
       ${changed() ? '<button data-action="cancel">Cancel</button>' : `<button data-action="undo" ${history.length ? "" : "disabled"}>Undo</button>`}
       <button class="primary" data-action="apply" ${changed() ? "" : "disabled"}>Apply</button></div>`;
     updateGeometryReadouts();
-  } else if (view === "replay") {
-    inspector.innerHTML = `<div class="row spread"><h1>Traffic replay</h1><button data-action="original">${showingOriginal ? "Original" : "Your design"}</button></div>
+  } else if (view === "simulate") {
+    inspector.innerHTML = `<div class="row spread"><h1>Traffic simulation</h1><button data-action="compare" aria-pressed="${comparing}">Compare</button></div>
       <div class="row"><button id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
-      <input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Replay time">
-      <span id="clock">${clock(time)}</span></div><p id="live"></p>`;
-    updateReplayReadout();
+      <input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Simulation time">
+      <span id="clock">${clock(time)}</span></div>
+      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>`;
+    updateSimulationReadout();
   } else {
     const a = original.results;
     const b = currentRun.results;
@@ -225,13 +242,15 @@ function renderInspector() {
       ["Trips completed", a.finished, b.finished],
       ["Trips unfinished", a.waiting, b.waiting]
     ];
-    const summary = b.longestQueue < a.longestQueue && b.busDelay <= a.busDelay + .05 && b.waiting <= a.waiting
+    if (sumoComparison) rows.push(["Reported collisions", a.collisions, b.collisions]);
+    const summary = (!sumoComparison || b.collisions === 0) && b.longestQueue < a.longestQueue && b.busDelay <= a.busDelay + .05 && b.waiting <= a.waiting
       ? "Goal met. The queue is shorter and buses are no slower."
-      : "Shorten the queue without increasing bus delay or unfinished trips.";
+      : sumoComparison && b.collisions > 0 ? "SUMO reported collisions in your design."
+        : "Shorten the queue without increasing bus delay or unfinished trips.";
     inspector.innerHTML = `<h1>School pickup results</h1><div class="metrics">
       <span></span><span class="muted">Original</span><span>Your design</span>
       ${rows.map(row => row.map(item => `<span>${item}</span>`).join("")).join("")}
-      </div><p>${summary}</p>`;
+      </div><p>${summary}</p><p class="result-engine">${engineName()}</p>`;
   }
 }
 
@@ -243,12 +262,18 @@ function render() {
   renderInspector();
 }
 
-function updateReplayReadout() {
-  const run = showingOriginal ? original : currentRun;
-  const frame = run.frames[Math.round(time / step)];
+function engineName() {
+  return sumoComparison ? "Eclipse SUMO · Imported run" : "Built-in engine";
+}
+
+function updateSimulationReadout() {
+  const index = Math.floor(time / step + 1e-8);
   $("#clock").textContent = clock(time);
   $("#scrub").value = time;
-  $("#live").textContent = `${frame.finished} completed · ${metric(frame.longestQueue)} m longest queue`;
+  const stats = frame => `${frame.finished} trips · ${metric(frame.longestQueue)} m peak queue`;
+  $("#original-stats").textContent = stats(original.frames[index]);
+  $("#design-stats").textContent = stats(currentRun.frames[index]);
+  $("#live").textContent = comparing ? engineName() : `${stats(currentRun.frames[index])} · ${engineName()}`;
 }
 
 function toggleLane(bit) {
@@ -332,12 +357,12 @@ map.addEventListener("keydown", event => {
 });
 
 function frame(timestamp) {
-  if (!playing || view !== "replay") return;
+  if (!playing || view !== "simulate") return;
   const elapsed = previousFrame ? (timestamp - previousFrame) / 1000 : 0;
   previousFrame = timestamp;
   time = Math.min(duration, time + elapsed * 6);
   paintMap();
-  updateReplayReadout();
+  updateSimulationReadout();
   if (time < duration) animationId = requestAnimationFrame(frame);
   else {
     playing = false;
@@ -349,10 +374,13 @@ function enterView(next) {
   cancelAnimationFrame(animationId);
   playing = false;
   previousFrame = 0;
-  if (next !== "design") currentRun = simulate(design);
-  if (next === "replay" && view !== "replay") {
+  if (next !== "design") {
+    original = sumoComparison?.original ?? (originalBuiltIn ??= simulate(baseline));
+    currentRun = sumoComparison?.edited ?? simulate(design);
+  }
+  if (next === "simulate" && view !== "simulate") {
     time = 0;
-    showingOriginal = false;
+    highlightQueues = false;
   }
   view = next;
   render();
@@ -376,18 +404,33 @@ document.addEventListener("click", event => {
   else if (action === "apply") {
     history.push(design);
     design = { ...draft };
+    useBuiltIn();
     save();
     render();
   } else if (action === "undo" || action === "cancel") {
     if (action === "undo" && history.length) {
       design = history.pop();
+      useBuiltIn();
       save();
     }
     draft = { ...design };
     render();
-  } else if (action === "original") {
-    showingOriginal = !showingOriginal;
+  } else if (action === "compare") {
+    comparing = !comparing;
     render();
+    $('[data-action="compare"]').focus();
+  } else if (action === "peak") {
+    cancelAnimationFrame(animationId);
+    playing = false;
+    const frames = currentRun.frames;
+    const index = frames.findIndex(frame => frame.longestQueue === currentRun.results.longestQueue);
+    time = index < 0 ? 0 : Number((index * step).toFixed(1));
+    highlightQueues = true;
+    comparing = true;
+    paintMap();
+    updateSimulationReadout();
+    renderInspector();
+    $('[data-action="peak"]').focus();
   } else if (action === "play") {
     playing = !playing;
     if (playing && time >= duration) time = 0;
@@ -401,7 +444,7 @@ inspector.addEventListener("input", event => {
   if (event.target.id !== "scrub") return;
   time = Number(event.target.value);
   paintMap();
-  updateReplayReadout();
+  updateSimulationReadout();
 });
 
 $("#menu").addEventListener("click", () => {
@@ -409,9 +452,75 @@ $("#menu").addEventListener("click", () => {
   panel.hidden = !panel.hidden;
   $("#menu").setAttribute("aria-expanded", !panel.hidden);
 });
+function sumoStatus(message) {
+  const status = $("#sumo-status");
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function useBuiltIn() {
+  sumoComparison = undefined;
+  $("#use-built-in").hidden = true;
+  sumoStatus("");
+}
+
+$("#use-built-in").addEventListener("click", () => {
+  useBuiltIn();
+  $("#menu").click();
+  time = 0;
+  highlightQueues = false;
+  enterView(view);
+});
+
+$("#export-sumo").addEventListener("click", () => {
+  if (changed()) {
+    sumoStatus("Apply or cancel your draft before exporting.");
+    return;
+  }
+  const payload = JSON.stringify(sumoRequest(design));
+  const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "traffic-manager-sumo-request.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  sumoStatus("Exported both designs for the desktop SUMO runner.");
+});
+
+$("#import-sumo").addEventListener("click", () => {
+  if (changed()) {
+    sumoStatus("Apply or cancel your draft before importing.");
+    return;
+  }
+  $("#sumo-file").click();
+});
+
+$("#sumo-file").addEventListener("change", async event => {
+  const input = event.target;
+  const file = input.files[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    if (file.size > 32 * 1024 * 1024) throw new Error("Choose a SUMO results file smaller than 32 MB.");
+    const payload = JSON.parse(await file.text());
+    if (changed()) throw new Error("Apply or cancel your draft before importing.");
+    sumoComparison = readSumoComparison(payload, design);
+    sumoStatus("SUMO comparison loaded for this session.");
+    $("#use-built-in").hidden = false;
+    if (!$("#menu-panel").hidden) $("#menu").click();
+    time = 0;
+    comparing = true;
+    highlightQueues = false;
+    enterView("simulate");
+  } catch (error) {
+    sumoStatus(error instanceof SyntaxError ? "Choose a valid SUMO results JSON file." : error.message);
+  }
+});
+
 $("#reset").addEventListener("click", () => {
   history.push(design);
   design = { ...baseline };
+  useBuiltIn();
   draft = { ...design };
   save();
   $("#menu").click();

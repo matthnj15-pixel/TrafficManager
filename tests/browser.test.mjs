@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
 
@@ -17,7 +17,7 @@ const waitForServer = async () => {
   throw new Error("Local test server did not start");
 };
 
-test("edit, replay, compare, and reopen offline at both mobile sizes", { timeout: 45000 }, async () => {
+test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 45000 }, async () => {
   let browser;
   try {
     await waitForServer();
@@ -77,15 +77,25 @@ test("edit, replay, compare, and reopen offline at both mobile sizes", { timeout
       assert.equal(await endHandle.getAttribute("aria-valuenow"), "224");
       await drag("Merge lane end", 0, 23);
       await click("Apply");
-      await click("Replay");
+      await click("Simulate");
       await click("Play");
       await page.waitForFunction(() => Number(document.querySelector("#scrub").value) > 1);
       await click("Pause");
-      await click("Your design");
-      await click("Original");
-      await page.getByRole("slider", { name: "Replay time" }).press("End");
+      const comparison = page.getByRole("region", { name: "Simulation comparison" });
+      assert.equal(await comparison.isVisible(), true);
+      assert.equal(await page.getByLabel("Original simulation map").isVisible(), true);
+      assert.equal(await page.getByLabel("Your design simulation map").isVisible(), true);
+      const paused = await page.locator("#scrub").inputValue();
+      await click("Compare");
+      assert.equal(await comparison.isVisible(), false);
+      await click("Compare");
+      assert.equal(await page.locator("#scrub").inputValue(), paused);
+      await click("Worst backup");
+      assert.ok(Number(await page.locator("#scrub").inputValue()) > 0);
+      assert.ok(await page.locator('#design-map rect[stroke="#ffab49"]').count() > 0);
+      await page.getByRole("slider", { name: "Simulation time" }).press("End");
       assert.equal(await page.locator("#clock").textContent(), "3:30");
-      await page.screenshot({ path: `test-results/replay-${viewport.width}.png` });
+      await page.screenshot({ path: `test-results/simulate-${viewport.width}.png` });
       await click("Results");
       const results = await page.locator("#inspector").textContent();
       assert.match(results, /School pickup results/);
@@ -97,6 +107,27 @@ test("edit, replay, compare, and reopen offline at both mobile sizes", { timeout
       await click("Results");
       assert.equal(await page.locator("#inspector").textContent(), results);
       await page.screenshot({ path: `test-results/results-${viewport.width}.png` });
+      if (viewport.width === 669 && process.env.TRAFFIC_TEST_SUMO === "1") {
+        await click("Menu");
+        const downloaded = page.waitForEvent("download");
+        await click("Export designs for SUMO");
+        const requestPath = "test-results/sumo-request.json";
+        const resultsPath = "test-results/sumo-results.json";
+        await (await downloaded).saveAs(requestPath);
+        const result = spawnSync("python3", ["scripts/run-sumo.py", requestPath, resultsPath], { encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const choosing = page.waitForEvent("filechooser");
+        await click("Open SUMO results");
+        await (await choosing).setFiles(resultsPath);
+        await page.getByText("Eclipse SUMO · Imported run", { exact: true }).waitFor();
+        await click("Worst backup");
+        await page.screenshot({ path: "test-results/sumo-comparison-669.png" });
+        await click("Results");
+        assert.match(await page.locator("#inspector").textContent(), /Reported collisions/);
+        await click("Menu");
+        await click("Use built-in engine");
+        await page.getByText("Built-in engine", { exact: true }).waitFor();
+      }
       await click("Menu");
       await click("Restore original design");
       await click("Results");

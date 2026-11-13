@@ -1,7 +1,7 @@
 const prefix = `traffic-manager:${new URL(self.registration.scope).pathname}:`;
 const revision = /* Pages revision */ "local-2";
 const cacheName = `${prefix}${revision}`;
-const files = ["./", "./index.html", "./styles.css", "./app.mjs", "./model.mjs", "./manifest.webmanifest", "./icon.svg"];
+const files = ["./", "./index.html", "./styles.css", "./app.mjs", "./model.mjs", "./sumo-export.mjs", "./manifest.webmanifest", "./icon.svg"];
 
 const shell = new Set(files.map(file => new URL(file, self.registration.scope).pathname));
 
