@@ -138,6 +138,26 @@ test("clean slate keeps demand and only routes trips through connected, correctl
   assert.match(files["routes.xml"], /id="south-to-school" edges="south-in [^"]+ school-out"/);
   assert.equal([...files["routes.xml"].matchAll(/<vehicle /g)].length, 128);
   assert.match(files["nodes.xml"], /id="j1"[^>]+type="traffic_light"/);
+  assert.match(files["nodes.xml"], /id="j2"[^>]+type="right_before_left"/);
+
+  nodes[0] = { ...nodes[0], control: "priority" };
+  roads[0] = { ...roads[0], atB: "priority" };
+  roads[1] = { ...roads[1], atB: "stop" };
+  roads[2] = { ...roads[2], atB: "yield" };
+  const controlled = sumoRequest({ ...baseline, network: { nodes, roads } });
+  const controlledFiles = sumoInputs(controlled, controlled.edited);
+  assert.match(controlledFiles["nodes.xml"], /id="j1"[^>]+type="priority" rightOfWay="edgePriority"/);
+  assert.match(controlledFiles["edges.xml"], /id="road-0-f"[^>]+priority="3"/);
+  assert.match(controlledFiles["edges.xml"], /id="road-1-f"[^>]+priority="1"/);
+  assert.match(controlledFiles["edges.xml"], /id="road-2-f"[^>]+priority="1"/);
+  assert.match(controlledFiles["routes.xml"], /route="west-to-east"[^>]+><stop edge="road-1-f" endPos="-0.5" duration="1"\/>/);
+  assert.doesNotMatch(controlledFiles["routes.xml"], /<stop edge="road-2-f"/);
+
+  nodes[0] = { ...nodes[0], control: "allway_stop" };
+  const allWay = sumoRequest({ ...baseline, network: { nodes, roads } });
+  const allWayFiles = sumoInputs(allWay, allWay.edited);
+  assert.match(allWayFiles["nodes.xml"], /id="j1"[^>]+type="allway_stop"/);
+  assert.doesNotMatch(allWayFiles["routes.xml"], /<stop edge=/);
   roads[5] = { ...roads[5], backward: 0 };
   const oneWay = sumoRequest({ ...baseline, network: { nodes, roads } });
   assert.doesNotMatch(sumoInputs(oneWay, oneWay.edited)["routes.xml"], /south-to-school/);

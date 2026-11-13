@@ -296,15 +296,20 @@ function freeNetworkInputs(request, network) {
   const outgoing = new Map();
   const incoming = new Map();
   const edges = [], connections = [];
+  const approachRules = new Map();
+  const usesApproachRules = node => node.control !== "traffic_light" && node.control !== "allway_stop";
   const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
-  const addEdge = (id, from, to, points, count, speed, length) => {
+  const addEdge = (id, from, to, points, count, speed, length, rule = "default") => {
     if (!count) return;
+    const control = usesApproachRules(nodes.get(to)) ? rule : "default";
+    const priority = { default: 2, priority: 3, yield: 1, stop: 1 }[control];
+    if (control !== "default") approachRules.set(id, control);
     const edge = { id, from, to, count, length };
     if (!outgoing.has(from)) outgoing.set(from, []);
     if (!incoming.has(to)) incoming.set(to, []);
     outgoing.get(from).push(edge);
     incoming.get(to).push(edge);
-    edges.push(element("edge", { id, from, to, shape: shape(points), speed, numLanes: count,
+    edges.push(element("edge", { id, from, to, shape: shape(points), speed, priority, numLanes: count,
       width: networkLaneWidth * request.scale, spreadType: "right" }));
   };
   for (const terminal of Object.values(terminals)) {
@@ -317,8 +322,8 @@ function freeNetworkInputs(request, network) {
   for (const [index, road] of network.roads.entries()) {
     const { samples, speed, length } = networkRoadGeometry(road, nodes);
     const points = samples.filter((_, i) => i % 5 === 0);
-    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length);
-    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length);
+    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB);
+    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA);
   }
   for (const [id, arrivals] of incoming) {
     for (const from of arrivals) {
@@ -355,6 +360,8 @@ function freeNetworkInputs(request, network) {
       }
     }
   }
+  const explicitJunctions = new Set([...incoming].filter(([, edges]) =>
+    edges.some(edge => approachRules.has(edge.id))).map(([id]) => id));
   const routes = Object.entries(request.types).map(([id, dimensions]) =>
     element("vType", { id, ...dimensions, accel: id === "bus" ? 1.05 : 2.1, decel: 4.5,
       sigma: 0, minGap: 2, maxSpeed: 12, speedFactor: 1, speedDev: 0 }));
@@ -366,13 +373,19 @@ function freeNetworkInputs(request, network) {
       routeCache.set(id, path);
       if (path) routes.push(element("route", { id, edges: path.join(" ") }));
     }
-    if (routeCache.get(id)) routes.push(element("vehicle", {
-      id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base", departLane: "best"
-    }));
+    const path = routeCache.get(id);
+    if (!path) continue;
+    const vehicle = { id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2),
+      departSpeed: 0, departPos: "base", departLane: "best" };
+    const stops = path.filter(edge => approachRules.get(edge) === "stop");
+    const tag = element("vehicle", vehicle);
+    routes.push(stops.length ? tag.replace(/\/>$/, ">") + stops.map(edge =>
+      element("stop", { edge, endPos: -.5, duration: 1 })).join("") + "</vehicle>" : tag);
   }
   return {
     "nodes.xml": wrap("nodes", [...nodes.values()].map(node => element("node", {
-      id: node.id, x: node.x * request.scale, y: -node.y * request.scale, type: node.control ?? "priority"
+      id: node.id, x: node.x * request.scale, y: -node.y * request.scale, type: explicitJunctions.has(node.id) ? "priority" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
+      ...(explicitJunctions.has(node.id) ? { rightOfWay: "edgePriority" } : {})
     }))),
     "edges.xml": wrap("edges", edges),
     "connections.xml": wrap("connections", connections),

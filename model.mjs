@@ -286,10 +286,11 @@ export function networkRoadGeometry(road, nodes) {
   const dx = end.x - start.x, dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   const ox = -dy * road.bend / length, oy = dx * road.bend / length;
-  const a = { x: start.x + dx / 3 + ox, y: start.y + dy / 3 + oy };
-  const b = { x: end.x - dx / 3 + ox, y: end.y - dy / 3 + oy };
+  const base = road.controls ?? [start.x + dx / 3, start.y + dy / 3, end.x - dx / 3, end.y - dy / 3];
+  const a = { x: base[0] + ox, y: base[1] + oy };
+  const b = { x: base[2] + ox, y: base[3] + oy };
   const geometry = cubic(start, a, b, end);
-  return { ...geometry, speed: road.bend ? geometry.speed : 12 };
+  return { ...geometry, speed: road.bend || road.controls ? geometry.speed : 12 };
 }
 
 function footprintAt(point, clearance) {
@@ -317,25 +318,132 @@ export function networkRoadIssue(network, road, ignore = -1) {
     if (obstacle) return `This road would cross ${obstacle}.`;
     if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep roads inside the map.";
   }
-  const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
   for (const [index, other] of network.roads.entries()) {
     if (index === ignore) continue;
     if ([other.a, other.b].every(id => id === road.a || id === road.b)) return "These nodes already share a road.";
-    const shared = [other.a, other.b].find(id => id === road.a || id === road.b);
-    const origin = nodes.get(shared);
-    const otherSamples = networkRoadGeometry(other, nodes).samples;
-    for (let i = 1; i < samples.length; i++) {
-      const a = samples[i - 1], b = samples[i];
-      for (let j = 1; j < otherSamples.length; j++) {
-        const c = otherSamples[j - 1], d = otherSamples[j];
-        if (Math.max(a.x, b.x) < Math.min(c.x, d.x) || Math.max(c.x, d.x) < Math.min(a.x, b.x) ||
-            Math.max(a.y, b.y) < Math.min(c.y, d.y) || Math.max(c.y, d.y) < Math.min(a.y, b.y)) continue;
-        if (cross(a, b, c) * cross(a, b, d) > 0 || cross(c, d, a) * cross(c, d, b) > 0) continue;
-        if (origin && [a, b, c, d].every(p => Math.hypot(p.x - origin.x, p.y - origin.y) < 4)) continue;
-        return "Add a junction before connecting across this road.";
+    if (roadCrossings(road, other, nodes).length) return "Roads must meet at a shared junction.";
+  }
+}
+
+function roadCrossings(road, other, nodes) {
+  const first = networkRoadGeometry(road, nodes);
+  const second = networkRoadGeometry(other, nodes);
+  const controls = ({ start, a, b, end }) => [start, a, b, end];
+  for (const axis of ["x", "y"]) {
+    const a = controls(first).map(point => point[axis]);
+    const b = controls(second).map(point => point[axis]);
+    if (Math.max(...a) < Math.min(...b) || Math.max(...b) < Math.min(...a)) return [];
+  }
+  const { samples } = first;
+  const otherSamples = second.samples;
+  const shared = [road.a, road.b].filter(id => id === other.a || id === other.b).map(id => nodes.get(id));
+  const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+  const hits = [];
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i];
+    const rx = b.x - a.x, ry = b.y - a.y;
+    for (let j = 1; j < otherSamples.length; j++) {
+      const c = otherSamples[j - 1], d = otherSamples[j];
+      if (Math.max(a.x, b.x) + 1e-7 < Math.min(c.x, d.x) || Math.max(c.x, d.x) + 1e-7 < Math.min(a.x, b.x) ||
+          Math.max(a.y, b.y) + 1e-7 < Math.min(c.y, d.y) || Math.max(c.y, d.y) + 1e-7 < Math.min(a.y, b.y)) continue;
+      const sx = d.x - c.x, sy = d.y - c.y;
+      const qx = c.x - a.x, qy = c.y - a.y;
+      const determinant = cross(rx, ry, sx, sy);
+      if (Math.abs(determinant) < 1e-8) {
+        if (Math.abs(cross(qx, qy, rx, ry)) > 1e-7) continue;
+        const squared = rx * rx + ry * ry;
+        const projections = [qx * rx + qy * ry, (d.x - a.x) * rx + (d.y - a.y) * ry].map(value => value / squared);
+        if (Math.min(1, Math.max(...projections)) - Math.max(0, Math.min(...projections)) > 1e-7) {
+          return [{ overlap: true }];
+        }
+        continue;
+      }
+      const t = cross(qx, qy, sx, sy) / determinant;
+      const u = cross(qx, qy, rx, ry) / determinant;
+      if (Math.min(t, u) < -1e-7 || Math.max(t, u) > 1 + 1e-7) continue;
+      const x = a.x + t * rx, y = a.y + t * ry;
+      if (shared.some(node => Math.hypot(node.x - x, node.y - y) < .1) ||
+          hits.some(hit => Math.hypot(hit.x - x, hit.y - y) < .1)) continue;
+      hits.push({ x, y, t: (i - 1 + t) / 100, u: (j - 1 + u) / 100 });
+    }
+  }
+  return hits;
+}
+
+export function nextNetworkNode(network, point) {
+  const used = new Set(network.nodes.map(node => node.id));
+  let number = 1;
+  while (used.has(`j${number}`)) number++;
+  return { id: `j${number}`, x: point.x, y: point.y, control: "priority" };
+}
+
+function splitRoad(road, nodes, cuts) {
+  if (!cuts.length) return [road];
+  const geometry = networkRoadGeometry(road, nodes);
+  const mix = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  let [p0, p1, p2, p3] = [geometry.start, geometry.a, geometry.b, geometry.end];
+  let previous = { node: nodes.get(road.a), t: 0 };
+  const parts = [];
+  const part = (a, b, c1, c2, atA, atB) => ({
+    a: a.id, b: b.id, forward: road.forward, backward: road.backward, bend: 0,
+    ...(road.controls || road.bend ? { controls: [c1.x, c1.y, c2.x, c2.y] } : {}),
+    ...(atA ? { atA } : {}), ...(atB ? { atB } : {})
+  });
+  for (const cut of cuts.sort((a, b) => a.t - b.t)) {
+    const t = (cut.t - previous.t) / (1 - previous.t);
+    const a = mix(p0, p1, t), b = mix(p1, p2, t), c = mix(p2, p3, t);
+    const d = mix(a, b, t), e = mix(b, c, t);
+    parts.push(part(previous.node, cut.node, a, d, previous.t === 0 && road.atA));
+    [p0, p1, p2] = [cut.node, e, c];
+    previous = cut;
+  }
+  parts.push(part(previous.node, nodes.get(road.b), p1, p2, undefined, road.atB));
+  return parts;
+}
+
+export function splitNetworkRoad(network, index, node, t) {
+  const nodes = networkNodes(network);
+  const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
+  const roads = network.roads.flatMap((road, i) => i === index ? parts : road);
+  return checkNetworkEdit({ nodes: [...network.nodes, node], roads }, network.roads);
+}
+
+function checkNetworkEdit(network, previousRoads) {
+  if (network.nodes.length > 60 || network.roads.length > 90) return { issue: "This map is full." };
+  for (const [index, road] of network.roads.entries()) {
+    if (previousRoads.includes(road)) continue;
+    const issue = networkRoadIssue(network, road, index);
+    if (issue) return { issue };
+  }
+  return { network };
+}
+
+export function connectNetworkRoad(network, road, replace = -1) {
+  const nodes = networkNodes(network);
+  const start = nodes.get(road.a), end = nodes.get(road.b);
+  if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return { issue: "Choose a point farther away." };
+  const addedNodes = [...network.nodes];
+  const cuts = [], otherCuts = new Map();
+  const endpoint = (item, t) => t < 1e-6 ? nodes.get(item.a) : t > 1 - 1e-6 ? nodes.get(item.b) : undefined;
+  for (const [index, other] of network.roads.entries()) {
+    if (index === replace) continue;
+    for (const hit of roadCrossings(road, other, nodes)) {
+      if (hit.overlap) return { issue: "These roads overlap. Draw a different path." };
+      const existing = endpoint(road, hit.t) ?? endpoint(other, hit.u) ??
+        addedNodes.find(node => Math.hypot(node.x - hit.x, node.y - hit.y) < .1);
+      const node = existing ?? nextNetworkNode({ nodes: addedNodes }, hit);
+      if (!existing) addedNodes.push(node);
+      if (!endpoint(road, hit.t) && !cuts.some(cut => cut.node.id === node.id)) cuts.push({ node, t: hit.t });
+      if (!endpoint(other, hit.u)) {
+        if (!otherCuts.has(index)) otherCuts.set(index, []);
+        otherCuts.get(index).push({ node, t: hit.u });
       }
     }
   }
+  const roads = network.roads.flatMap((other, i) =>
+    i === replace ? splitRoad(road, nodes, cuts) : splitRoad(other, nodes, otherCuts.get(i) ?? []));
+  if (replace < 0) roads.push(...splitRoad(road, nodes, cuts));
+  return checkNetworkEdit({ nodes: addedNodes, roads }, network.roads);
 }
 
 function validNetwork(network) {
@@ -350,5 +458,7 @@ function validNetwork(network) {
   return network.roads.every((road, index) => road && ids.has(road.a) && ids.has(road.b) &&
     [road.forward, road.backward].every(count => Number.isInteger(count) && count >= 0 && count <= 4) &&
     road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
+    (road.controls === undefined || Array.isArray(road.controls) && road.controls.length === 4 && road.controls.every(Number.isFinite)) &&
+    [road.atA, road.atB].every(rule => rule === undefined || ["default", "priority", "yield", "stop"].includes(rule)) &&
     !networkRoadIssue(network, road, index));
 }

@@ -31,6 +31,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       page.setDefaultTimeout(4500);
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(url);
+      assert.equal(await page.locator("#map text").filter({ hasText: /Alder Avenue/ }).count(), 0);
       const cdp = await context.newCDPSession(page);
       const clickLocator = locator => locator.click();
       const click = name => clickLocator(page.getByRole("button", { name, exact: true }));
@@ -314,12 +315,20 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await click("Clear map");
         assert.equal(await page.locator("[data-free-node]").count(), 6);
         assert.equal(await page.locator("[data-road-node], [data-handle]").count(), 0);
-        const south = await page.getByRole("button", { name: "South connection", exact: true }).boundingBox();
+        const southNode = page.getByRole("button", { name: "South connection", exact: true });
+        const south = await southNode.boundingBox();
+        assert.deepEqual(await southNode.locator("text").evaluate(label => ({
+          selectable: getComputedStyle(label).userSelect,
+          pointerEvents: getComputedStyle(label).pointerEvents,
+          nativeMenu: label.dispatchEvent(new Event("contextmenu", { bubbles: true, cancelable: true })),
+          nativeSelection: label.dispatchEvent(new Event("selectstart", { bubbles: true, cancelable: true }))
+        })), { selectable: "none", pointerEvents: "none", nativeMenu: false, nativeSelection: false });
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart",
           touchPoints: [{ x: south.x + south.width / 2, y: south.y + south.height / 2 }] });
         await page.getByText("From South", { exact: true }).waitFor();
         assert.match(await page.locator(".terminal-demand").textContent(), /School access · 4 trips/);
         assert.equal(await page.locator("[data-demand-layer] path").count(), 3);
+        assert.equal(await page.evaluate(() => window.getSelection().toString()), "");
         await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
         await page.screenshot({ path: "test-results/clean-slate-demand.png" });
         await click("School access connection");
@@ -334,17 +343,33 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await mapTap(270, 327);
         await click("South connection");
         await click("Junction 1");
-        await mapTap(270, 180);
         await click("North connection");
-        await click("Junction 2");
         await click("West connection");
-        await click("Junction 2");
         await click("East connection");
+        assert.equal(await page.locator("[data-free-node]").count(), 8);
         await click("Junction 1");
         await click("Pickup loop connection");
         await click("Select");
         await click("Junction 2");
+        await click("Traffic light");
+        assert.equal(await page.locator('[data-control="traffic_light"]').getAttribute("aria-pressed"), "true");
         await click("All-way stop");
+        assert.equal(await page.locator('[data-control="allway_stop"]').getAttribute("aria-pressed"), "true");
+        await click("Unsignalized");
+        assert.equal(await page.locator('[data-control="priority"]').getAttribute("aria-pressed"), "true");
+        assert.equal(await page.locator("[data-approach-select]").count(), 4);
+        const selectApproach = label => page.locator("#inspector").getByRole("button", { name: label, exact: true }).click();
+        await selectApproach("From West");
+        await click("Stop sign");
+        await selectApproach("From North");
+        await click("Right of way");
+        await selectApproach("From West");
+        assert.equal(await page.locator('[data-approach-rule="stop"]').getAttribute("aria-pressed"), "true");
+        await click("Junction 1");
+        await selectApproach("From School access");
+        await click("Stop sign");
+        await selectApproach("From South");
+        await click("Right of way");
         await page.screenshot({ path: "test-results/clean-slate-network.png" });
         await click("Test design");
         await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
@@ -352,6 +377,9 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(await page.getByText("Trips with no route", { exact: true }).count(), 0);
         await page.reload();
         assert.equal(await page.locator("[data-free-node]").count(), 8);
+        await click("Junction 2");
+        await selectApproach("From West");
+        assert.equal(await page.locator('[data-approach-rule="stop"]').getAttribute("aria-pressed"), "true");
       }
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight ||

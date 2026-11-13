@@ -14,7 +14,7 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 
 [Gameplay catalog](GAMEPLAY.md)
 
-Choose **Road Builder → Clear map** to start from the permanent connections and landscape. Hold a connection to see scheduled destinations. In **Draw**, start at a connection and tap open ground to extend the road. Use **Add node** to split a road before branching.
+Choose **Road Builder → Clear map** to start from the permanent connections and landscape. Hold a connection to see scheduled destinations. In **Draw**, start at a connection and tap open ground to extend the road. Crossing roads create a shared junction automatically. Tap the junction in **Select** to set its control and assign right of way or a stop sign to individual approaches.
 
 ## School Pickup
 
