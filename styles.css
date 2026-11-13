@@ -117,3 +117,29 @@ button { touch-action: manipulation; }
 .inspector .inspector-toggle { min-width: 44px; padding: 0; font-size: 22px; }
 .terminal-demand { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: #ffffff19; }
 .terminal-demand strong { display: block; font-size: .85rem; }
+
+.builder-tools { display: flex; align-items: center; gap: 3px; margin-top: 7px; }
+.builder-tools button { flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; }
+.builder-tools button:nth-child(4) { flex: 1.25; margin-right: 5px; }
+.builder-tools svg, .snap-controls svg, .lane-adjustments > button svg {
+  width: 21px; height: 21px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+.snap-controls { display: flex; gap: 5px; margin-top: 6px; }
+.snap-controls button { display: flex; align-items: center; justify-content: center; gap: 5px; flex: 1; padding: 0 5px; font-size: .78rem; }
+.snap-controls svg { width: 16px; height: 16px; }
+.lane-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-top: 7px; }
+.lane-cards button { display: grid; min-width: 0; padding: 3px 3px 5px; gap: 3px; border-radius: 9px; overflow: hidden; font-size: clamp(.62rem, 2.8vw, .77rem); }
+.lane-cards svg { width: 100%; max-height: 42px; border-radius: 6px; background: #a5d8e0; }
+.lane-adjustments { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+.lane-adjustments button { padding: 0 8px; }
+.lane-adjustments > button { display: grid; place-items: center; margin-left: auto; min-width: 44px; }
+.lane-adjustments > button + button { margin-left: 0; }
+.lane-count { display: flex; align-items: center; gap: 3px; }
+.lane-count button:first-child { display: flex; align-items: center; gap: 4px; font-size: .74rem; }
+.lane-count button:last-child { min-width: 27px; padding: 0 5px; }
+.lane-count svg { width: 26px; height: 24px; }
+#map.network-edit {
+  position: absolute;
+  top: max(64px, calc(env(safe-area-inset-top) + 60px));
+  height: max(160px, calc(100% - max(64px, calc(env(safe-area-inset-top) + 60px)) - var(--editor-height, 0px) - max(10px, env(safe-area-inset-bottom)) - 60px));
+}

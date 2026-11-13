@@ -4,9 +4,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { sumoRequest } from "../sumo-export.mjs";
+import { baseline } from "../model.mjs";
+import { after } from "node:test";
 
 const url = "http://127.0.0.1:4183";
 const server = spawn("python3", ["-m", "http.server", "4183", "--bind", "127.0.0.1"], { stdio: "ignore" });
+after(() => server.kill());
 const waitForServer = async () => {
   for (let attempt = 0; attempt < 50; attempt++) {
     try {
@@ -30,7 +33,13 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       const errors = [];
       page.setDefaultTimeout(4500);
       page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(saved => {
+        if (localStorage.getItem("traffic-manager.school-pickup.v1") === null) {
+          localStorage.setItem("traffic-manager.school-pickup.v1", JSON.stringify(saved));
+        }
+      }, baseline);
       await page.goto(url);
+      await page.reload();
       assert.equal(await page.locator("#map text").filter({ hasText: /Alder Avenue/ }).count(), 0);
       const cdp = await context.newCDPSession(page);
       const clickLocator = locator => locator.click();
@@ -389,6 +398,102 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
     }
   } finally {
     await browser?.close();
-    server.kill();
+  }
+});
+
+test("the unified Road Builder supports touch edits and offline simulation", { timeout: 60000 }, async () => {
+  let browser;
+  try {
+    await waitForServer();
+    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    page.setDefaultTimeout(4500);
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(url);
+    const click = name => page.getByRole("button", { name, exact: true }).click();
+    const toolbar = name => page.locator(".builder-tools").getByRole("button", { name, exact: true });
+    const mapPoint = (x, y) => page.locator("#map").evaluate((map, [x, y]) =>
+      new DOMPoint(x, y).matrixTransform(map.getScreenCTM()).toJSON(), [x, y]);
+    const tap = async (x, y) => {
+      const point = await mapPoint(x, y);
+      await page.touchscreen.tap(point.x, point.y);
+    };
+    const cdp = await context.newCDPSession(page);
+    const drag = async (x1, y1, x2, y2) => {
+      const a = await mapPoint(x1, y1), b = await mapPoint(x2, y2);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: a.x, y: a.y }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: b.x, y: b.y }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    };
+    const position = async selector => {
+      const circle = page.locator(selector);
+      return [Number(await circle.getAttribute("cx")), Number(await circle.getAttribute("cy"))];
+    };
+    await page.getByRole("heading", { name: "Road Builder" }).waitFor();
+    assert.equal(await page.locator(".tools").isVisible(), false);
+    assert.equal(await toolbar("Adjust curve").isDisabled(), true);
+    await tap(270, 250);
+    assert.equal(await toolbar("Adjust curve").isEnabled(), true);
+    assert.equal(await page.locator(".lane-cards svg").count(), 4);
+    await page.screenshot({ path: "test-results/unified-lane-cards.png" });
+    await click("Add lane right");
+    assert.equal(await page.getByRole("button", { name: "Three-lane", exact: true }).getAttribute("aria-pressed"), "true");
+    await toolbar("Undo").click();
+    await toolbar("Redo").click();
+    await tap(270, 250);
+    assert.equal(await page.getByRole("button", { name: "Three-lane", exact: true }).getAttribute("aria-pressed"), "true");
+    await toolbar("Adjust curve").click();
+    const handle = '[data-curve-handle="0"] circle:last-child';
+    const [hx, hy] = await position(handle);
+    await drag(hx, hy, hx + 19, hy + 8);
+    assert.ok((await position(handle))[0] > hx + 10);
+    await page.screenshot({ path: "test-results/unified-curve.png" });
+    await toolbar("Adjust curve").click();
+    assert.equal(await page.locator("[data-curve-handle]").count(), 0);
+    await toolbar("Add node").click();
+    await tap(235, 300);
+    await click("Snap to roads");
+    await drag(235, 300, 245, 318);
+    let [nx, ny] = await position('[data-free-node="j3"] circle:last-of-type');
+    assert.ok(Math.abs(nx - 245) <= 2 && Math.abs(ny - 318) <= 2);
+    await click("Snap to grid");
+    await drag(nx, ny, 235, 346);
+    assert.deepEqual(await position('[data-free-node="j3"] circle:last-of-type'), [240, 340]);
+    await click("Snap to roads");
+    await drag(240, 340, 268, 359);
+    [nx, ny] = await position('[data-free-node="j3"] circle:last-of-type');
+    assert.equal(nx, 270);
+    assert.ok(Math.abs(ny - 359) <= 3);
+    await toolbar("Draw").click();
+    await click("One-way");
+    await click("Snap to grid");
+    await click("Snap to angle");
+    await page.screenshot({ path: "test-results/unified-draw.png" });
+    await click("Minimize design panel");
+    await drag(448, 440, 370, 362);
+    await click("Expand design panel");
+    assert.equal(await page.locator("[data-free-node]").count(), 10, await page.locator("#detail").textContent());
+    await toolbar("Select").click();
+    await click("Apply");
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+    const oneWay = saved.network.roads.find(road => road.a === "pickup" && road.b !== "j2" && road.backward === 0);
+    assert.ok(oneWay);
+    const endpoint = saved.network.nodes.find(node => node.id === oneWay.b);
+    assert.equal(448 - endpoint.x, 440 - endpoint.y);
+    assert.equal(oneWay.bend, 0);
+    assert.equal(oneWay.controls, undefined);
+    await click("Menu");
+    await page.getByText("Ready for offline play", { exact: true }).waitFor();
+    await context.setOffline(true);
+    await page.reload();
+    await click("Test design");
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser?.close();
   }
 });

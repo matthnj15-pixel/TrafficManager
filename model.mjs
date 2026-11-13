@@ -277,6 +277,17 @@ export function tripTerminals(trip) {
 
 export const networkLaneWidth = 6;
 
+export function starterNetwork() {
+  const nodes = [
+    { id: "j1", x: 270, y: 180, control: "traffic_light" },
+    { id: "j2", x: 270, y: 327, control: "priority" }
+  ];
+  const roads = [["north", "j1"], ["west", "j1"], ["j1", "east"], ["j1", "j2"], ["j2", "south"], ["j2", "school"]]
+    .map(([a, b]) => ({ a, b, forward: 1, backward: 1, bend: 0 }));
+  roads.push({ a: "pickup", b: "j2", forward: 1, backward: 0, bend: 0, controls: [368, 440, 270, 420], atB: "yield" });
+  return { nodes, roads };
+}
+
 export function networkNodes(network) {
   return new Map([...Object.values(terminals), ...network.nodes].map(node => [node.id, node]));
 }
@@ -311,7 +322,8 @@ export function networkRoadIssue(network, road, ignore = -1) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
   if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return "Choose a point farther away.";
-  const { samples } = networkRoadGeometry(road, nodes);
+  const { samples, speed } = networkRoadGeometry(road, nodes);
+  if (!Number.isFinite(speed)) return "Keep the curve handles clear of their endpoints.";
   const clearance = Math.max(road.forward, road.backward) * networkLaneWidth + 2;
   for (const point of samples) {
     const obstacle = footprintAt(point, clearance);
@@ -406,6 +418,41 @@ export function splitNetworkRoad(network, index, node, t) {
   const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
   const roads = network.roads.flatMap((road, i) => i === index ? parts : road);
   return checkNetworkEdit({ nodes: [...network.nodes, node], roads }, network.roads);
+}
+
+export function moveNetworkNode(network, id, point, targetId, roadTarget) {
+  const node = network.nodes.find(item => item.id === id);
+  if (!node) return { issue: "This connection is fixed." };
+  if (id === targetId || !targetId && !roadTarget && point.x === node.x && point.y === node.y) return { network };
+  const target = targetId ? networkNodes(network).get(targetId) : point;
+  const issue = targetId ? undefined : networkNodeIssue(target);
+  if (issue) return { issue };
+  const attached = network.roads.filter(road => road.a === id || road.b === id);
+  let next = {
+    nodes: network.nodes.flatMap(item => item.id !== id ? [item] : targetId ? [] : [{ ...node, x: target.x, y: target.y }]),
+    roads: network.roads.filter(road => !attached.includes(road))
+  };
+  if (roadTarget) {
+    const road = network.roads[roadTarget.index];
+    const parts = splitRoad(road, networkNodes(network), [{ node: { ...node, ...point }, t: roadTarget.t }]);
+    next.roads = next.roads.flatMap(item => item === road ? parts : item);
+    const result = checkNetworkEdit(next, network.roads);
+    if (result.issue) return result;
+  }
+  for (const road of attached) {
+    const atStart = road.a === id;
+    const moved = { ...road, [atStart ? "a" : "b"]: targetId ?? id };
+    if (road.controls) {
+      moved.controls = [...road.controls];
+      const offset = atStart ? 0 : 2;
+      moved.controls[offset] += target.x - node.x;
+      moved.controls[offset + 1] += target.y - node.y;
+    }
+    const result = connectNetworkRoad(next, moved);
+    if (result.issue) return result;
+    next = result.network;
+  }
+  return { network: next };
 }
 
 function checkNetworkEdit(network, previousRoads) {

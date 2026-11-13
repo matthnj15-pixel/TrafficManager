@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baseline, connectNetworkRoad, curve, mergeTaper, networkNodes, networkRoadGeometry, normalizeDesign, pointOnCurve, validate } from "../model.mjs";
+import { baseline, connectNetworkRoad, curve, mergeTaper, moveNetworkNode, networkNodes, networkRoadGeometry, normalizeDesign, pointOnCurve, starterNetwork, validate } from "../model.mjs";
 
 test("crossing roads share a junction and preserve curves, lanes, and endpoint rules", () => {
   const avenue = { a: "north", b: "south", forward: 1, backward: 2, bend: 12, atA: "stop", atB: "priority" };
@@ -24,6 +24,19 @@ test("crossing roads share a junction and preserve curves, lanes, and endpoint r
   assert.ok(validate({ ...baseline, network }));
   assert.match(connectNetworkRoad(network, crossStreet).issue, /overlap/);
   assert.equal(before.roads.length, 1);
+});
+
+test("moving a junction translates its adjacent curve handle and keeps invalid moves atomic", () => {
+  const network = starterNetwork();
+  const result = moveNetworkNode(network, "j2", { x: 270, y: 340 });
+  assert.ok(result.network, result.issue);
+  const pickup = result.network.roads.find(road => road.a === "pickup");
+  assert.deepEqual(pickup.controls, [368, 440, 270, 433]);
+  assert.equal(pickup.atB, "yield");
+  assert.ok(validate({ ...baseline, network: result.network }));
+  assert.match(moveNetworkNode(network, "j2", { x: 110, y: 210 }).issue, /school/);
+  assert.equal(network.nodes.find(node => node.id === "j2").y, 327);
+  assert.match(moveNetworkNode(network, "north", { x: 270, y: 110 }).issue, /fixed/);
 });
 
 test("moving the merge and reshaping its bend preserve tangent alignment", () => {

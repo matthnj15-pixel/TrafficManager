@@ -14,9 +14,11 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 
 [Gameplay catalog](GAMEPLAY.md)
 
-Choose **Road Builder → Clear map** to start from the permanent connections and landscape. Hold a connection to see scheduled destinations. In **Draw**, start at a connection and tap open ground to extend the road. Crossing roads create a shared junction automatically. Tap the junction in **Select** to set its control and assign right of way or a stop sign to individual approaches.
+Fresh games open in the unified **Road Builder**. **Draw** offers illustrated lane presets and grid, angle, and road snaps. Draw a straight segment by dragging between nodes, or tap two endpoints. In **Select**, tap a segment to change lanes or turn on curve handles. Tap a node to drag it or set its traffic rules. Crossing roads create a shared junction automatically. **Clear map** keeps the permanent connections and landscape. Hold a connection to see scheduled destinations.
 
-## School Pickup
+## Original corridor saves
+
+Existing corridor saves retain the original controls below. Use **Menu → Try new Road Builder** to load the starter layout as a draft, then **Apply** to save it.
 
 - **Move node**. Drag the square along Alder Avenue. With the auxiliary lane connected, drag the diamond to end the lane and the triangle to start its taper. A longer taper raises the modeled curve speed and takes up more of the lane. A lane ending close to the signal leaves less room for the queue.
 - **Adjust curve**. Drag the round handles to change the pickup bend while keeping its ends aligned. The radius limits the modeled approach speed.
