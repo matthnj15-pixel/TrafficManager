@@ -1,17 +1,13 @@
 {
-  "name": "willow-valley",
+  "name": "traffic-manager",
   "private": true,
-  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
-    "test:e2e": "playwright test",
-    "build:offline": "node scripts/build-offline.mjs . offline.html",
-    "build:icons": "node scripts/build-icons.mjs . ."
+    "start": "python3 -m http.server 4173 --bind 127.0.0.1",
+    "test": "node --test tests/model.test.mjs",
+    "test:browser": "node --test tests/browser.test.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "1.56.1",
-    "esbuild": "0.25.12",
-    "sharp": "0.35.5"
+    "playwright": "1.57.0"
   }
 }

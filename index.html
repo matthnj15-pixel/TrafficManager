@@ -1,41 +1,36 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#18372c">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Willow Valley">
-<title>Willow Valley · Your living settlement</title>
-<link rel="manifest" href="./manifest.webmanifest">
-<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
-<link rel="icon" type="image/svg+xml" href="./icon.svg">
-<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
-<link rel="stylesheet" href="./styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0f4b70">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Traffic Manager · School pickup</title>
 </head>
-<body class="game-page">
-<div id="app">
-<header class="topbar">
-  <div><div class="eyebrow"><span id="environment">DEVELOPMENT</span> · <span id="offlineStatus">LOCAL GAME</span></div><h1>Willow Valley</h1><div id="calendar" class="calendar"></div></div>
-  <button class="icon-button" id="menuBtn" aria-label="Game menu">☰</button>
-</header>
-<section class="stats" id="resourceBar" aria-label="Settlement resources"></section>
-<main id="stage" class="stage">
-  <svg id="map" aria-label="Interactive map. Drag to pan, pinch to zoom, tap to build." role="img"></svg>
-  <div class="map-info" id="modeLabel">Explore · drag to pan · pinch to zoom</div>
-  <div class="zoom" aria-label="Zoom controls"><button id="zoomIn" aria-label="Zoom in">+</button><button id="zoomOut" aria-label="Zoom out">−</button></div>
-  <div class="road-controls" id="roadControls" hidden><span id="roadInfo">Tap the map to trace your road.</span><div><button id="undoRoad">Undo</button><button id="cancelRoad">Cancel</button><button id="confirmRoad" class="primary">Build road</button></div></div>
+<body>
+<main class="game">
+  <svg id="map" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid meet" aria-label="School pickup road map"></svg>
+  <header>
+    <div class="glass title"><span class="scenario">School pickup</span><span id="subtitle">Make room for pickup traffic.</span></div>
+    <button id="menu" class="glass round" aria-label="Menu" aria-expanded="false">•••</button>
+  </header>
+  <div id="menu-panel" class="glass menu-panel" hidden>
+    <span id="offline">Preparing offline play…</span>
+    <button id="reset" type="button">Restore original design</button>
+  </div>
+  <aside class="glass tools" aria-label="Road tools">
+    <button type="button" data-tool="move" aria-label="Move node"></button>
+    <button type="button" data-tool="curve" aria-label="Adjust curve"></button>
+    <button type="button" data-tool="lanes" aria-label="Connect lanes"></button>
+  </aside>
+  <section id="inspector" class="glass inspector" aria-label="Design controls"></section>
+  <nav class="glass tabs" aria-label="Game views">
+    <button data-view="design">Design</button><button data-view="replay">Replay</button><button data-view="results">Results</button>
+  </nav>
 </main>
-<div class="dispatch"><div class="dispatch-copy"><span class="eyebrow">THE VALLEY REPORT</span><p id="report"></p></div><button id="historyBtn" aria-label="Settlement history">↗</button></div>
-<nav class="dock" id="gameDock" aria-label="Game actions"></nav>
-</div>
-<div id="backdrop" class="backdrop" hidden></div>
-<section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label="Game panel" hidden>
-  <div class="sheet-grip"></div><div class="sheet-head"><h2 id="sheetTitle"></h2><button id="closeSheet" class="icon-button" aria-label="Close">×</button></div>
-  <div id="sheetBody"></div>
-</section>
-<input type="file" id="importSave" accept=".json,application/json" hidden>
-<div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
 <script type="module" src="./app.mjs"></script>
-</body></html>
+</body>
+</html>
