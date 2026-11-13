@@ -10,6 +10,12 @@ GitHub Pages serves the latest passing push to `main` at the home URL. Branches 
 
 For initial setup, select **Settings → Pages → Source → GitHub Actions** in TrafficManager. After the tests on `main` pass, run **Publish Traffic Manager** from the Actions tab if Pages was enabled after the automatic run.
 
+## Main gameplay
+
+[Gameplay catalog](GAMEPLAY.md)
+
+Choose **Road Builder → Clear map** to start from the permanent connections and landscape. Hold a connection to see scheduled destinations. In **Draw**, start at a connection and tap open ground to extend the road. Use **Add node** to split a road before branching.
+
 ## School Pickup
 
 - **Move node**. Drag the square along Alder Avenue. With the auxiliary lane connected, drag the diamond to end the lane and the triangle to start its taper. A longer taper raises the modeled curve speed and takes up more of the lane. A lane ending close to the signal leaves less room for the queue.

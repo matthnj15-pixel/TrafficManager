@@ -116,3 +116,29 @@ test("rebuilding a cleared avenue does not recreate removed access roads", () =>
   assert.doesNotMatch(files["edges.xml"], /id="(?:pickup-road|school-in|slip-road)"/);
   assert.match(files["routes.xml"], /id="outer"/);
 });
+
+test("clean slate keeps demand and only routes trips through connected, correctly directed roads", () => {
+  const network = { nodes: [], roads: [] };
+  const blank = sumoRequest({ ...baseline, network });
+  const blankFiles = sumoInputs(blank, blank.edited);
+  assert.equal(blank.trips.length, 128);
+  assert.equal([...blankFiles["edges.xml"].matchAll(/<edge /g)].length, 12);
+  assert.doesNotMatch(blankFiles["routes.xml"], /<vehicle /);
+
+  const nodes = [
+    { id: "j1", x: 270, y: 180, control: "traffic_light" },
+    { id: "j2", x: 270, y: 327, control: "priority" }
+  ];
+  const roads = [
+    ["north", "j1"], ["west", "j1"], ["east", "j1"], ["j1", "j2"],
+    ["j2", "south"], ["school", "j2"], ["pickup", "j2"]
+  ].map(([a, b]) => ({ a, b, forward: 1, backward: 1, bend: 0 }));
+  const request = sumoRequest({ ...baseline, network: { nodes, roads } });
+  const files = sumoInputs(request, request.edited);
+  assert.match(files["routes.xml"], /id="south-to-school" edges="south-in [^"]+ school-out"/);
+  assert.equal([...files["routes.xml"].matchAll(/<vehicle /g)].length, 128);
+  assert.match(files["nodes.xml"], /id="j1"[^>]+type="traffic_light"/);
+  roads[5] = { ...roads[5], backward: 0 };
+  const oneWay = sumoRequest({ ...baseline, network: { nodes, roads } });
+  assert.doesNotMatch(sumoInputs(oneWay, oneWay.edited)["routes.xml"], /south-to-school/);
+});

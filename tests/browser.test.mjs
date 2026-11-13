@@ -308,6 +308,51 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
 
       }
+      if (viewport.width === 390) {
+        await click("Design");
+        await click("Road Builder");
+        await click("Clear map");
+        assert.equal(await page.locator("[data-free-node]").count(), 6);
+        assert.equal(await page.locator("[data-road-node], [data-handle]").count(), 0);
+        const south = await page.getByRole("button", { name: "South connection", exact: true }).boundingBox();
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart",
+          touchPoints: [{ x: south.x + south.width / 2, y: south.y + south.height / 2 }] });
+        await page.getByText("From South", { exact: true }).waitFor();
+        assert.match(await page.locator(".terminal-demand").textContent(), /School access · 4 trips/);
+        assert.equal(await page.locator("[data-demand-layer] path").count(), 3);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.screenshot({ path: "test-results/clean-slate-demand.png" });
+        await click("School access connection");
+        const mapTap = async (x, y) => {
+          const point = await page.locator("#map").evaluate((map, { x, y }) =>
+            new DOMPoint(x, y).matrixTransform(map.getScreenCTM()).toJSON(), { x, y });
+          await page.touchscreen.tap(point.x, point.y);
+        };
+        await mapTap(172, 180);
+        assert.match(await page.locator("#detail").textContent(), /cross the school/);
+        assert.equal(await page.locator("[data-free-node]").count(), 6);
+        await mapTap(270, 327);
+        await click("South connection");
+        await click("Junction 1");
+        await mapTap(270, 180);
+        await click("North connection");
+        await click("Junction 2");
+        await click("West connection");
+        await click("Junction 2");
+        await click("East connection");
+        await click("Junction 1");
+        await click("Pickup loop connection");
+        await click("Select");
+        await click("Junction 2");
+        await click("All-way stop");
+        await page.screenshot({ path: "test-results/clean-slate-network.png" });
+        await click("Test design");
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+        await click("Results");
+        assert.equal(await page.getByText("Trips with no route", { exact: true }).count(), 0);
+        await page.reload();
+        assert.equal(await page.locator("[data-free-node]").count(), 8);
+      }
       assert.deepEqual(errors, []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight ||
         document.documentElement.scrollWidth > innerWidth), false);

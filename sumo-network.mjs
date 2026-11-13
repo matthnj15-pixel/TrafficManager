@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, selectedLane } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, networkLaneWidth, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -20,15 +20,17 @@ export function signalPhase(time, green, cycle) {
   return "all-red";
 }
 
+const element = (tag, attributes) => `<${tag} ${Object.entries(attributes).map(([key, value]) => `${key}="${value}"`).join(" ")}/>`;
+const wrap = (tag, items) => `<${tag}>\n${items.join("\n")}\n</${tag}>\n`;
+
 export function sumoInputs(request, layout) {
+  if (layout.design.network) return freeNetworkInputs(request, layout.design.network);
   const { world, scale } = request;
   const { design, curves, taper } = layout;
   const main = design.lanes & 1;
   const auxiliary = design.lanes & 2;
   const schoolOpen = design.schoolAccess !== false && design.schoolRight;
   const nodes = [], edges = [], connections = [], prohibitions = [], routes = [];
-  const element = (tag, attributes) => `<${tag} ${Object.entries(attributes).map(([key, value]) => `${key}="${value}"`).join(" ")}/>`;
-  const wrap = (tag, items) => `<${tag}>\n${items.join("\n")}\n</${tag}>\n`;
   const node = (id, x, y, type = "priority") =>
     nodes.push(element("node", { id, x: x * scale, y: -y * scale, type, radius: .5 }));
   const shape = points => points.map(([x, y]) => `${(x * scale).toFixed(4)},${(-y * scale).toFixed(4)}`).join(" ");
@@ -289,6 +291,95 @@ export function sumoInputs(request, layout) {
   };
 }
 
+function freeNetworkInputs(request, network) {
+  const nodes = networkNodes(network);
+  const outgoing = new Map();
+  const incoming = new Map();
+  const edges = [], connections = [];
+  const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
+  const addEdge = (id, from, to, points, count, speed, length) => {
+    if (!count) return;
+    const edge = { id, from, to, count, length };
+    if (!outgoing.has(from)) outgoing.set(from, []);
+    if (!incoming.has(to)) incoming.set(to, []);
+    outgoing.get(from).push(edge);
+    incoming.get(to).push(edge);
+    edges.push(element("edge", { id, from, to, shape: shape(points), speed, numLanes: count,
+      width: networkLaneWidth * request.scale, spreadType: "right" }));
+  };
+  for (const terminal of Object.values(terminals)) {
+    const { id, x, y, dx, dy } = terminal;
+    const boundary = { id: `${id}-boundary`, x: x + dx, y: y + dy };
+    nodes.set(boundary.id, boundary);
+    addEdge(`${id}-in`, boundary.id, id, [boundary, terminal], 1, 9, Math.hypot(dx, dy));
+    addEdge(`${id}-out`, id, boundary.id, [terminal, boundary], 1, 9, Math.hypot(dx, dy));
+  }
+  for (const [index, road] of network.roads.entries()) {
+    const { samples, speed, length } = networkRoadGeometry(road, nodes);
+    const points = samples.filter((_, i) => i % 5 === 0);
+    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length);
+    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length);
+  }
+  for (const [id, arrivals] of incoming) {
+    for (const from of arrivals) {
+      for (const to of outgoing.get(id) ?? []) {
+        if (from.from === to.to && !id.endsWith("-boundary")) continue;
+        if (id.endsWith("-boundary")) continue;
+        for (let lane = 0; lane < from.count; lane++) {
+          connections.push(element("connection", {
+            from: from.id, to: to.id, fromLane: lane,
+            toLane: Math.min(to.count - 1, lane + Math.max(0, to.count - from.count))
+          }));
+        }
+      }
+    }
+  }
+
+  // Search by incoming edge so routes respect one-way segments and exclude U-turns.
+  const routeCache = new Map();
+  function routeBetween(origin, destination) {
+    const first = outgoing.get(`${origin}-boundary`)[0];
+    const pending = [{ edge: first, distance: 0, path: [first.id] }];
+    const visited = new Set();
+    while (pending.length) {
+      pending.sort((a, b) => b.distance - a.distance);
+      const { edge, distance, path } = pending.pop();
+      if (visited.has(edge.id)) continue;
+      visited.add(edge.id);
+      if (edge.id === `${destination}-out`) return path;
+      if (edge.to.endsWith("-boundary")) continue;
+      for (const next of outgoing.get(edge.to) ?? []) {
+        if (next.to !== edge.from && !visited.has(next.id)) {
+          pending.push({ edge: next, distance: distance + next.length, path: [...path, next.id] });
+        }
+      }
+    }
+  }
+  const routes = Object.entries(request.types).map(([id, dimensions]) =>
+    element("vType", { id, ...dimensions, accel: id === "bus" ? 1.05 : 2.1, decel: 4.5,
+      sigma: 0, minGap: 2, maxSpeed: 12, speedFactor: 1, speedDev: 0 }));
+  for (const trip of request.trips) {
+    const [origin, destination] = tripTerminals(trip);
+    const id = `${origin}-to-${destination}`;
+    if (!routeCache.has(id)) {
+      const path = routeBetween(origin, destination);
+      routeCache.set(id, path);
+      if (path) routes.push(element("route", { id, edges: path.join(" ") }));
+    }
+    if (routeCache.get(id)) routes.push(element("vehicle", {
+      id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base", departLane: "best"
+    }));
+  }
+  return {
+    "nodes.xml": wrap("nodes", [...nodes.values()].map(node => element("node", {
+      id: node.id, x: node.x * request.scale, y: -node.y * request.scale, type: node.control ?? "priority"
+    }))),
+    "edges.xml": wrap("edges", edges),
+    "connections.xml": wrap("connections", connections),
+    "routes.xml": wrap("routes", routes)
+  };
+}
+
 export const netconvertArgs = [
   "--node-files", "nodes.xml", "--edge-files", "edges.xml", "--connection-files", "connections.xml",
   "--offset.disable-normalization", "--output-file", "corridor.net.xml"
@@ -327,6 +418,7 @@ export function sumoArgs({ duration, step }) {
 // These are controlled SUMO XML outputs. Read only the numeric attributes
 // and identifiers needed by the comparison, including inside a worker.
 function queueZoneFor(lane) {
+  if (/^road-\d+-[fb]_/.test(lane)) return "Rebuilt network";
   if (lane.startsWith("road-")) return "Alder Avenue";
   return queueZones[lane.replace(/_\d+$/, "")] ?? "Junction";
 }

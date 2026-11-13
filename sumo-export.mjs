@@ -1,4 +1,4 @@
-import { arrivals, baseline, curve, duration, mergeTaper, normalizeDesign, scale, schoolEntry, signalCycle, slipGeometry, step, validate, vehicleDimensions, world } from "./model.mjs";
+import { scheduledTrips, baseline, curve, duration, mergeTaper, normalizeDesign, scale, schoolEntry, signalCycle, slipGeometry, step, validate, vehicleDimensions, world } from "./model.mjs";
 
 export function sumoRequest(design) {
   if (!validate(design)) throw new Error("Invalid corridor design.");
@@ -26,11 +26,7 @@ export function sumoRequest(design) {
       })
     };
   };
-  const trips = arrivals();
-  if (design.road != null) {
-    for (let i = 0; i < 12; i++) trips.push({ id: trips.length, time: 6 + i * 14, kind: "car", origin: "southbound" });
-    trips.sort((a, b) => a.time - b.time);
-  }
+  const trips = scheduledTrips(design.road != null || design.network != null);
   return {
     schema: "traffic-manager.sumo-request.v2", world, scale, step, duration,
     signalCycle,

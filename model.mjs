@@ -1,4 +1,4 @@
-export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, taperYield: false, signalRight: true, schoolRight: true, schoolAccess: true, road: null, slipLane: 1, pickupLane: 1 });
+export const baseline = Object.freeze({ node: 310, entry: 82, exit: 58, lanes: 1, mergeEnd: 224, taperLength: 38, green: 21, slipStart: 0, slipEnd: 0, slipBend: 42, slipYield: true, pickupYield: false, taperYield: false, signalRight: true, schoolRight: true, schoolAccess: true, network: null, road: null, slipLane: 1, pickupLane: 1 });
 export const world = Object.freeze({
   start: { x: 448, y: 440 }, inner: 261, outer: 280, auxiliary: 302,
   signal: 180, south: 590, north: 90
@@ -21,7 +21,7 @@ export function validate(design) {
     Number.isFinite(design.entry) && design.entry >= 25 && design.entry <= 125 &&
     Number.isFinite(design.exit) && design.exit >= 20 && design.exit <= 125 &&
     ([1, 2, 3].includes(design.lanes) || design.lanes === 0 && Array.isArray(design.road)) &&
-    validRoad(design.road) &&
+    validRoad(design.road) && validNetwork(design.network) &&
     ["slipLane", "pickupLane"].every(key => design[key] === undefined ||
       Number.isInteger(design[key]) && design[key] >= 1 && design[key] <= 4) &&
     ["slipYield", "pickupYield", "taperYield", "signalRight", "schoolRight", "schoolAccess"].every(key => design[key] === undefined || typeof design[key] === "boolean") &&
@@ -165,7 +165,7 @@ export function normalizeDesign(design) {
     slipBend: design.slipBend ?? baseline.slipBend,
     slipYield: design.slipYield ?? baseline.slipYield, pickupYield: design.pickupYield ?? baseline.pickupYield,
     taperYield: design.taperYield ?? design.pickupYield ?? baseline.taperYield,
-    road: design.road ?? null, slipLane: design.slipLane ?? 1, pickupLane: design.pickupLane ?? 1,
+    network: design.network ?? null, road: design.road ?? null, slipLane: design.slipLane ?? 1, pickupLane: design.pickupLane ?? 1,
     schoolAccess: design.schoolAccess ?? baseline.schoolAccess,
     signalRight: design.signalRight ?? baseline.signalRight, schoolRight: design.schoolRight ?? baseline.schoolRight
   };
@@ -235,4 +235,120 @@ export function avenueLanePath(piece, x, north = true) {
   return { path: first.path + second.path.replace(/^M [^ ]+ [^ ]+ /, ""),
     samples: [...first.samples.filter((_, i) => i % 10 === 0), ...second.samples.filter((_, i) => i > 0 && i % 10 === 0)],
     speed: bend ? Math.min(14, first.speed, second.speed) : 14 };
+}
+
+export const terminals = Object.freeze({
+  north: { id: "north", name: "North", x: 270, y: 90, dx: 0, dy: -24 },
+  south: { id: "south", name: "South", x: 270, y: 590, dx: 0, dy: 24 },
+  west: { id: "west", name: "West", x: 40, y: 180, dx: -24, dy: 0 },
+  east: { id: "east", name: "East", x: 470, y: 180, dx: 24, dy: 0 },
+  school: { id: "school", name: "School access", x: 155, y: 327, dx: 0, dy: -25 },
+  pickup: { id: "pickup", name: "Pickup loop", x: 448, y: 440, dx: 25, dy: 0 }
+});
+
+export const trees = [[31,118],[44,142],[191,121],[211,151],[38,282],[66,299],[178,285],[207,267],
+  [432,179],[457,192],[431,221],[451,230],[394,301],[423,310],[458,348],
+  [186,375],[204,397],[153,426],[78,433],[40,470],[418,551],[449,569],[464,580],[54,552]]
+  .filter(([x, y]) => !(x > 420 && y < 200));
+
+export const siteFootprints = [
+  { name: "the school", x: 48, y: 190, w: 83, h: 26 },
+  { name: "the school", x: 143, y: 200, w: 56, h: 37 },
+  { name: "the playing field", x: 52, y: 228, w: 92, h: 57 },
+  { name: "a house", x: 36, y: 540, w: 90, h: 64 },
+  { name: "a house", x: 358, y: 116, w: 48, h: 48 },
+  { name: "a house", x: 371, y: 254, w: 60, h: 29 }
+];
+
+export function scheduledTrips(withSouthbound) {
+  const trips = arrivals();
+  if (withSouthbound) {
+    for (let i = 0; i < 12; i++) trips.push({ id: trips.length, time: 6 + i * 14, kind: "car", origin: "southbound" });
+    trips.sort((a, b) => a.time - b.time);
+  }
+  return trips;
+}
+
+export function tripTerminals(trip) {
+  if (trip.origin === "cross") return ["west", "east"];
+  if (trip.origin === "southbound") return ["north", "south"];
+  return [trip.origin === "ramp" ? "pickup" : "south", trip.destination];
+}
+
+export const networkLaneWidth = 6;
+
+export function networkNodes(network) {
+  return new Map([...Object.values(terminals), ...network.nodes].map(node => [node.id, node]));
+}
+
+export function networkRoadGeometry(road, nodes) {
+  const start = nodes.get(road.a), end = nodes.get(road.b);
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  const ox = -dy * road.bend / length, oy = dx * road.bend / length;
+  const a = { x: start.x + dx / 3 + ox, y: start.y + dy / 3 + oy };
+  const b = { x: end.x - dx / 3 + ox, y: end.y - dy / 3 + oy };
+  const geometry = cubic(start, a, b, end);
+  return { ...geometry, speed: road.bend ? geometry.speed : 12 };
+}
+
+function footprintAt(point, clearance) {
+  const { x, y } = point;
+  const building = siteFootprints.find(site =>
+    Math.hypot(Math.max(site.x - x, 0, x - site.x - site.w), Math.max(site.y - y, 0, y - site.y - site.h)) < clearance);
+  if (building) return building.name;
+  if (trees.some(([tx, ty]) => Math.hypot(tx - x, ty - y) < clearance + 6)) return "a tree";
+}
+
+export function networkNodeIssue(point) {
+  const obstacle = footprintAt(point, 2);
+  if (obstacle) return `This junction would overlap ${obstacle}.`;
+  if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep junctions inside the map.";
+}
+
+export function networkRoadIssue(network, road, ignore = -1) {
+  const nodes = networkNodes(network);
+  const start = nodes.get(road.a), end = nodes.get(road.b);
+  if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return "Choose a point farther away.";
+  const { samples } = networkRoadGeometry(road, nodes);
+  const clearance = Math.max(road.forward, road.backward) * networkLaneWidth + 2;
+  for (const point of samples) {
+    const obstacle = footprintAt(point, clearance);
+    if (obstacle) return `This road would cross ${obstacle}.`;
+    if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep roads inside the map.";
+  }
+  const cross = (a, b, p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+  for (const [index, other] of network.roads.entries()) {
+    if (index === ignore) continue;
+    if ([other.a, other.b].every(id => id === road.a || id === road.b)) return "These nodes already share a road.";
+    const shared = [other.a, other.b].find(id => id === road.a || id === road.b);
+    const origin = nodes.get(shared);
+    const otherSamples = networkRoadGeometry(other, nodes).samples;
+    for (let i = 1; i < samples.length; i++) {
+      const a = samples[i - 1], b = samples[i];
+      for (let j = 1; j < otherSamples.length; j++) {
+        const c = otherSamples[j - 1], d = otherSamples[j];
+        if (Math.max(a.x, b.x) < Math.min(c.x, d.x) || Math.max(c.x, d.x) < Math.min(a.x, b.x) ||
+            Math.max(a.y, b.y) < Math.min(c.y, d.y) || Math.max(c.y, d.y) < Math.min(a.y, b.y)) continue;
+        if (cross(a, b, c) * cross(a, b, d) > 0 || cross(c, d, a) * cross(c, d, b) > 0) continue;
+        if (origin && [a, b, c, d].every(p => Math.hypot(p.x - origin.x, p.y - origin.y) < 4)) continue;
+        return "Add a junction before connecting across this road.";
+      }
+    }
+  }
+}
+
+function validNetwork(network) {
+  if (network == null) return true;
+  if (!Array.isArray(network.nodes) || !Array.isArray(network.roads) || network.nodes.length > 60 || network.roads.length > 90) return false;
+  const ids = new Set(Object.keys(terminals));
+  for (const node of network.nodes) {
+    if (!node || !/^j\d+$/.test(node.id) || ids.has(node.id) ||
+        !Number.isFinite(node.x) || !Number.isFinite(node.y) || networkNodeIssue(node) || !["priority", "allway_stop", "traffic_light"].includes(node.control)) return false;
+    ids.add(node.id);
+  }
+  return network.roads.every((road, index) => road && ids.has(road.a) && ids.has(road.b) &&
+    [road.forward, road.backward].every(count => Number.isInteger(count) && count >= 0 && count <= 4) &&
+    road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
+    !networkRoadIssue(network, road, index));
 }
