@@ -1,6 +1,9 @@
 const prefix = `traffic-manager:${new URL(self.registration.scope).pathname}:`;
-const cacheName = `${prefix}1`;
+const revision = /* Pages revision */ "local-2";
+const cacheName = `${prefix}${revision}`;
 const files = ["./", "./index.html", "./styles.css", "./app.mjs", "./model.mjs", "./manifest.webmanifest", "./icon.svg"];
+
+const shell = new Set(files.map(file => new URL(file, self.registration.scope).pathname));
 
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(files)));
@@ -12,10 +15,8 @@ self.addEventListener("activate", event => {
 });
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
-  if (event.request.method !== "GET" || !url.href.startsWith(self.registration.scope)) return;
-  event.respondWith(fetch(event.request).catch(async () => {
-    const cache = await caches.open(cacheName);
-    const response = await cache.match(event.request, { ignoreSearch: true });
-    return response ?? (event.request.mode === "navigate" ? cache.match("./") : Response.error());
-  }));
+  if (event.request.method !== "GET" || url.origin !== self.location.origin || !shell.has(url.pathname)) return;
+  event.respondWith(caches.open(cacheName).then(async cache =>
+    await cache.match(event.request, { ignoreSearch: true }) ?? fetch(event.request)
+  ));
 });

@@ -2,6 +2,14 @@
 
 School Pickup is a first playable traffic engineering scenario. Shorten the pickup queue without delaying buses or leaving more trips unfinished.
 
+## Play on iPhone
+
+[Open Traffic Manager](https://matthnj15-pixel.github.io/TrafficManager/) in Safari. Choose **Share → Add to Home Screen**, enable **Open as Web App**, and launch it from the new icon while online. The game menu shows **Ready for offline play** when that installation has cached the game.
+
+GitHub Pages serves the latest passing push to `main` at the home URL. Branches named `develop` or `playtest/…` publish their latest passing push under `/previews/<branch>/`. Each preview has its own Home Screen app identity, save, and offline cache.
+
+For initial setup, select **Settings → Pages → Source → GitHub Actions** in TrafficManager. After the tests on `main` pass, run **Publish Traffic Manager** from the Actions tab if Pages was enabled after the automatic run.
+
 ## Play locally
 
 Run `npm start` and open http://127.0.0.1:4173. The game itself requires no dependencies.

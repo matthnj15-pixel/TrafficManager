@@ -1,0 +1,56 @@
+name: Publish Traffic Manager
+
+on:
+  workflow_run:
+    workflows: [Test Traffic Manager]
+    types: [completed]
+    branches: [main, develop, 'playtest/**']
+  workflow_dispatch:
+  delete:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: traffic-manager-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'delete' && github.event.ref_type == 'branch' &&
+        (github.event.ref == 'develop' || startsWith(github.event.ref, 'playtest/'))) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build stable and branch previews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_TESTED_ONLY: '1'
+        run: bash scripts/build-pages.sh "${{ runner.temp }}/traffic-manager-pages"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/traffic-manager-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

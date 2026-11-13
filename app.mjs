@@ -3,7 +3,10 @@ import { baseline, world, curve, simulate, duration, step, validate } from "./mo
 const $ = selector => document.querySelector(selector);
 const map = $("#map");
 const inspector = $("#inspector");
-const storageKey = "traffic-manager.school-pickup.v1";
+const appPath = new URL(".", import.meta.url).pathname;
+const storageKey = appPath.includes("/previews/")
+  ? `traffic-manager.school-pickup.v1:${appPath}`
+  : "traffic-manager.school-pickup.v1";
 const original = simulate(baseline);
 const history = [];
 const icons = {
@@ -376,9 +379,13 @@ $("#reset").addEventListener("click", () => {
 
 render();
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.addEventListener("controllerchange", () => { $("#offline").textContent = "Ready for offline play"; });
-  navigator.serviceWorker.register("./sw.js").then(async () => {
-    await navigator.serviceWorker.ready;
-    if (navigator.serviceWorker.controller) $("#offline").textContent = "Ready for offline play";
-  }).catch(() => { $("#offline").textContent = "Offline setup unavailable"; });
+  const workerUrl = new URL("./sw.js", import.meta.url).href;
+  const updateOfflineStatus = () => {
+    if (navigator.serviceWorker.controller?.scriptURL === workerUrl) {
+      $("#offline").textContent = "Ready for offline play";
+    }
+  };
+  navigator.serviceWorker.addEventListener("controllerchange", updateOfflineStatus);
+  navigator.serviceWorker.register(workerUrl).then(updateOfflineStatus)
+    .catch(() => { $("#offline").textContent = "Offline setup unavailable"; });
 } else $("#offline").textContent = "Offline setup unavailable";
