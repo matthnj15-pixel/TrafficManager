@@ -1,6 +1,62 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { baseline, connectNetworkRoad, curve, isLaneDrop, junctionMovements, mergeTaper, moveNetworkNode, moveRoadLaneAnchor, networkLaneSamples, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, removeNetworkRoad, roadCurveFromPull, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
+import { commitRoadDraft, freeformBendControls, junctionLegs, networkLaneWidth, roadDraftControls, shiftNetworkRoad } from "../model.mjs";
+
+test("complex roads go through the break with a shared tangent and an independent end angle", () => {
+  const layouts = [
+    { points: [[50, 485], [105, 445], [125, 397]], middle: [1, -1, 24], end: [-.1, -1, 26] },
+    { points: [[70, 495], [125, 454], [175, 405]], middle: [1, 2, 50], end: [0, -1, 44] },
+    { points: [[62, 478], [123, 447], [183, 402]], middle: [1, .8, 50], end: [-1, -1, 43] },
+    { points: [[64, 488], [110, 443], [157, 395]], middle: [1, -1, 22], end: [1, -1, 30] }
+  ];
+  for (const { points, middle, end } of layouts) {
+    const anchors = points.map(([x, y]) => ({ x, y }));
+    const tangent = ([x, y, reach]) => ({ x, y, reach });
+    const controls = roadDraftControls(anchors, [undefined, tangent(middle), tangent(end)]);
+    const result = commitRoadDraft({ nodes: [], roads: [] }, anchors, { forward: 1, backward: 0 }, controls);
+    assert.ok(result.network, result.issue);
+    const nodes = networkNodes(result.network);
+    const [first, second] = result.network.roads.map(road => networkRoadGeometry(road, nodes));
+    assert.deepEqual(first.end, second.start);
+    assert.deepEqual([first.end.x, first.end.y], points[1]);
+    assert.ok(Math.abs(first.samples.at(-1).angle - second.samples[0].angle) < 1e-8);
+    assert.ok(Math.abs(second.samples.at(-1).angle - Math.atan2(end[1], end[0])) < 1e-8);
+    assert.equal(validate({ ...baseline, network: result.network }), true);
+  }
+});
+
+test("a held freeform span follows the drag while the staged chain commits atomically", () => {
+  const a = { x: 65, y: 491 }, b = { x: 125, y: 465 }, c = { x: 180, y: 444 };
+  const controls = freeformBendControls(a, b, { x: 0, y: 18 });
+  const network = { nodes: [], roads: [] };
+  const next = commitRoadDraft(network, [a, b, c], { forward: 1, backward: 0 }, [controls]);
+  assert.ok(next.network, next.issue);
+  const nodes = networkNodes(next.network);
+  const middle = networkRoadGeometry(next.network.roads[0], nodes).samples[50];
+  assert.ok(Math.abs(middle.x - (a.x + b.x) / 2) < 1e-8);
+  assert.ok(Math.abs(middle.y - (a.y + b.y) / 2 - 18) < 1e-8);
+  assert.equal(next.network.roads[1].controls, undefined);
+  assert.ok(commitRoadDraft(network, [a, b, { x: 100, y: 200 }], { forward: 1, backward: 0 }, [controls]).issue);
+  assert.deepEqual(network, { nodes: [], roads: [] });
+});
+
+test("a segment shift keeps its junctions, offsets the lane geometry, and aligns through movements", () => {
+  const network = starterNetwork();
+  network.roads[0] = { ...network.roads[0], forward: 2 };
+  network.roads[3] = { ...network.roads[3], forward: 2 };
+  const control = network.nodes[0];
+  const through = graph => junctionMovements(graph, control).find(move => move.from === "north" && move.to === "j2" && move.fromLane === 0);
+  assert.equal(through(network).toLane, 0);
+  const shifted = shiftNetworkRoad(network, 3, 1);
+  assert.ok(shifted.network, shifted.issue);
+  assert.equal(shifted.network.nodes, network.nodes);
+  assert.equal(through(shifted.network).toLane, 1);
+  const center = graph => networkLaneSamples(graph.roads[3], graph, networkNodes(graph), true, 0)[10].x;
+  assert.ok(Math.abs(center(network) - center(shifted.network) - networkLaneWidth) < .1);
+  assert.equal(junctionLegs(shifted.network, "j1").length, junctionLegs(network, "j1").length);
+  assert.equal(validate({ ...baseline, network: shifted.network }), true);
+});
 
 test("an extra lane tapers by default and can branch to a specific receiving lane", () => {
   let network = starterNetwork();

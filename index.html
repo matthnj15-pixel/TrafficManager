@@ -8,7 +8,7 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg">
   <link rel="stylesheet" href="./styles.css">
-  <title>Traffic Manager · School pickup</title>
+  <title>Traffic Manager · School Pickup</title>
 </head>
 <body>
 <main class="game">
@@ -24,16 +24,19 @@
     </figure>
   </section>
   <header>
-    <div class="glass title">
+    <button id="menu" class="glass title" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu-panel">
       <svg class="scenario-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 26V6m20 0v20M16 7v3m0 5v3m0 5v3"/><path d="M5 26c6-1 12-4 12-10V7m-4 4 4-4 4 4"/></svg>
-      <div><span class="scenario">School pickup</span><span id="subtitle">Make room for pickup traffic.</span></div>
-    </div>
-    <button id="menu" class="glass round" aria-label="Menu" aria-expanded="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>
+      <span>Traffic Manager</span>
+      <svg class="menu-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
     </button>
+    <nav class="glass tabs" aria-label="Game views">
+      <button data-view="design">Design</button><button data-view="simulate">Simulate</button><button data-view="results">Results</button>
+    </nav>
   </header>
   <div id="menu-panel" class="glass menu-panel" hidden>
+    <strong>School Pickup</strong>
     <span id="offline">Preparing offline play…</span>
+    <span id="subtitle" role="status" hidden></span>
     <button data-action="new-builder" type="button" hidden>Try new Road Builder</button>
     <button id="reset" type="button">Restore original design</button>
   </div>
@@ -47,9 +50,6 @@
     <button type="button" data-tool="signal" aria-label="Signal timing"></button>
   </aside>
   <section id="inspector" class="glass inspector" aria-label="Design controls"></section>
-  <nav class="glass tabs" aria-label="Game views">
-    <button data-view="design">Design</button><button data-view="simulate">Simulate</button><button data-view="results">Results</button>
-  </nav>
 </main>
 <script type="module" src="./app.mjs"></script>
 </body>

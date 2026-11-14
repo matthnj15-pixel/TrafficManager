@@ -4,9 +4,38 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
+import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
 import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
+
+test("SUMO receives shifted lane shapes and obeys lane-wide and intersection-wide rules", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "traffic-junction-rules-"));
+  try {
+    const starter = starterNetwork();
+    const shifted = shiftNetworkRoad(starter, 3, 1);
+    assert.ok(shifted.network, shifted.issue);
+    const { nodes, roads } = shifted.network;
+    for (const rules of [{ control: "yield" }, { control: "priority", laneRules: { "west:0": "stop", "north:0": "yield" } }]) {
+      const network = { nodes: [{ ...nodes[0], ...rules }, nodes[1]], roads };
+      const design = { ...baseline, network };
+      const request = sumoRequest(design);
+      const files = sumoInputs(request, request.edited);
+      assert.match(files["edges.xml"], /<edge id="road-3-f"[^>]*>\s*<lane index="0" shape="208\.8000,/);
+      for (const [name, contents] of Object.entries(files)) await writeFile(join(dir, name), contents);
+      const built = spawnSync("netconvert", netconvertArgs, { cwd: dir, encoding: "utf8" });
+      assert.equal(built.status, 0, built.error?.message ?? built.stderr);
+      const net = configureJunctions(await readFile(join(dir, "corridor.net.xml"), "utf8"), design, request.cycle);
+      const connections = [...net.matchAll(/<connection from="(road-\d+-[fb])"[^>]+via=":j1[^"]+"[^>]+state="([^"]+)"/g)];
+      assert.equal(connections.length, 12);
+      for (const [, edge, state] of connections) {
+        if (rules.control === "yield" || edge === "road-0-f") assert.equal(state, "m");
+        if (rules.control === "priority" && edge === "road-1-f") assert.equal(state, "s");
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("native SUMO follows an extra lane into its taper or the selected slip-lane branch", async () => {
   const junction = (id, x, y) => ({ id, x, y, control: "priority" });

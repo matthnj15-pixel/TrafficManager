@@ -299,7 +299,7 @@ function freeNetworkInputs(request, network) {
   const transitions = new Map();
   const explicitJunctions = new Set();
   const laneDrops = new Set(network.nodes.filter(node => isLaneDrop(network, node)).map(node => node.id));
-  const usesApproachRules = node => node.control !== "traffic_light" && node.control !== "allway_stop";
+  const usesApproachRules = node => node.control === "priority" || !node.control;
   const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
   const addEdge = (id, from, to, points, count, speed, length, rule = "default", laneShapes) => {
     if (!count) return;
@@ -327,7 +327,7 @@ function freeNetworkInputs(request, network) {
     const geometry = networkRoadGeometry(road, nodes);
     const { samples, speed, length } = geometry;
     const points = samples.filter((_, i) => i % 5 === 0);
-    const laneShapes = (forward, count) => count && (forward && (road.laneA || road.laneB) || laneDropTaper(network, road, nodes, forward)) ?
+    const laneShapes = (forward, count) => count && (road.laneShift || forward && (road.laneA || road.laneB) || laneDropTaper(network, road, nodes, forward).length) ?
       Array.from({ length: count }, (_, lane) => networkLaneSamples(road, network, nodes, forward, lane, geometry)) : undefined;
     addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward));
     addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA, laneShapes(false, road.backward));
@@ -336,7 +336,7 @@ function freeNetworkInputs(request, network) {
     const node = nodes.get(id);
     const moves = node.control && junctionMovements(network, node);
     const legs = laneDrops.has(id) ? new Map(junctionLegs(network, id, nodes).map(leg => [leg.neighbor, leg])) : undefined;
-    if (node.movements?.some(move => move.rule !== "default") && usesApproachRules(node)) explicitJunctions.add(id);
+    if (node.control === "yield" || usesApproachRules(node) && moves?.some(move => move.rule !== "default")) explicitJunctions.add(id);
     for (const from of arrivals) {
       if (id.endsWith("-boundary")) continue;
       const exits = [];
@@ -349,7 +349,7 @@ function freeNetworkInputs(request, network) {
         if (links.length) exits.push(to);
         for (const { fromLane, toLane } of links) {
           const fromLeg = legs?.get(from.from), toLeg = legs?.get(to.to);
-          const taper = fromLeg && toLeg && fromLane < laneDropTaper(network, fromLeg.road, nodes, !fromLeg.atA) ?
+          const taper = fromLeg && toLeg && laneDropTaper(network, fromLeg.road, nodes, !fromLeg.atA).includes(fromLane) ?
             shape(networkMergeSamples(network, fromLeg, toLeg, nodes, fromLane, toLane)) : undefined;
           connections.push(element("connection", {
             from: from.id, to: to.id, fromLane, toLane, ...(taper ? { shape: taper } : {})
@@ -422,11 +422,15 @@ export function configureJunctions(network, design, cycle) {
       const id = `road-${index}-${suffix}`;
       directions.set(id, { from, to });
       const junction = nodes.get(to);
-      if (rule === "stop" && junction.control === "priority" && !junction.movements) stopEdges.add(id);
+      if (rule === "stop" && junction.control === "priority" && !junction.movements && !junction.laneRules) stopEdges.add(id);
     }
   }
-  const custom = new Map(design.network.nodes.filter(node => node.control === "priority" && node.movements?.some(move => move.rule !== "default"))
-    .map(node => [node.id, new Map(node.movements.map(move => [movementKey(move), move.rule]))]));
+  const custom = new Map(design.network.nodes.flatMap(node => {
+    if (node.control !== "priority" && node.control !== "yield") return [];
+    const moves = junctionMovements(design.network, node);
+    if (!moves.length || node.control !== "yield" && !node.movements && !node.laneRules) return [];
+    return [[node.id, new Map(moves.map(move => [movementKey(move), node.control === "yield" ? "yield" : move.rule]))]];
+  }));
   if (!custom.size && !stopEdges.size) return network;
   const byInternalLane = new Map();
   const links = [...network.matchAll(/<connection\s[^>]+>/g)].map(([tag]) => ({ tag, ...attributes(tag) }));
