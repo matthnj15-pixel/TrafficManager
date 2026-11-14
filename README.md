@@ -14,7 +14,7 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 
 [Gameplay catalog](GAMEPLAY.md)
 
-Fresh games open in the unified **Road Builder**. **Draw** offers illustrated lane presets and grid, angle, and road snaps. Draw a straight segment by dragging between nodes, or tap two endpoints. In **Select**, tap a segment to change lanes or turn on curve handles. Tap a node to drag it or set its traffic rules. Crossing roads create a shared junction automatically. **Clear map** keeps the permanent connections and landscape. Hold a connection to see scheduled destinations.
+Fresh games open in **Road Builder**. In **Draw**, tap two endpoints for a straight road or hold and pull at the destination to shape a curve. Green lane handles let you continue an extra lane into a one-way slip road. Tap a destination junction to choose its receiving lane. In **Select**, drag a node to move its attached roads or use **Move lane start** and **Move lane end** on a one-way segment. Set turn permissions and priority in **Intersections**. **Test design** runs SUMO offline and opens a traffic replay you can compare with the original.
 
 ## Original corridor saves
 

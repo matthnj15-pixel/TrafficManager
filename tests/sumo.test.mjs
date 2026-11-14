@@ -4,9 +4,50 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, duration, junctionMovements, starterNetwork, step, world } from "../model.mjs";
+import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
 import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
+
+test("native SUMO follows an extra lane into its taper or the selected slip-lane branch", async () => {
+  const junction = (id, x, y) => ({ id, x, y, control: "priority" });
+  let { network } = splitNetworkRoad(starterNetwork(), 3, junction("j3", 270, 250), 70 / 147);
+  ({ network } = splitNetworkRoad(network, 2, junction("j4", 338, 180), 68 / 200));
+  network.roads[5] = { ...network.roads[5], backward: 2 };
+  network.roads[3] = { ...network.roads[3], forward: 2 };
+  const slip = { a: "j3", b: "j4", forward: 1, backward: 0, bend: 0, controls: [270, 215, 306, 180],
+    laneA: { neighbor: "j2", lane: 0 }, laneB: { neighbor: "east", lane: 0 } };
+  const branch = connectNetworkRoad(network, slip);
+  assert.ok(branch.network, branch.issue);
+  const dir = await mkdtemp(join(tmpdir(), "traffic-lane-branch-"));
+  const run = (command, args) => {
+    const result = spawnSync(command, args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  try {
+    for (const [graph, hasSlip] of [[network, false], [branch.network, true]]) {
+      const request = sumoRequest({ ...baseline, network: graph });
+      const files = sumoInputs(request, request.edited);
+      for (const [name, contents] of Object.entries(files)) await writeFile(join(dir, name), contents);
+      run("netconvert", netconvertArgs);
+      const file = join(dir, "corridor.net.xml");
+      const xml = await readFile(file, "utf8");
+      if (hasSlip) {
+        assert.match(xml, /<connection from="road-5-b" to="road-9-f" fromLane="0" toLane="0"/);
+        assert.doesNotMatch(xml, /<connection from="road-5-b" to="road-4-b" fromLane="0"/);
+        assert.match(xml, /<connection from="road-9-f" to="road-3-f" fromLane="0" toLane="0"/);
+        assert.match(files["routes.xml"], /id="south-to-east"[^>]*road-9-f/);
+      } else {
+        assert.match(xml, /<junction id="j3" type="zipper"/);
+        assert.match(xml, /<connection from="road-5-b" to="road-4-b" fromLane="0" toLane="0"/);
+      }
+      await writeFile(file, configureJunctions(xml, request.edited.design, request.signalCycle));
+      run("sumo", sumoArgs(request));
+      assert.doesNotMatch(await readFile(join(dir, "collisions.xml"), "utf8"), /<collision /);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("SUMO enforces movement permissions and distinct rules on the same incoming lane", async () => {
   const network = starterNetwork();

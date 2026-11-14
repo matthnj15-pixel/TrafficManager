@@ -1,6 +1,7 @@
 import { readSumoComparison, sumoRequest } from "./sumo-export.mjs";
 import { clearance } from "./sumo-network.mjs";
-import { junctionLegs, junctionMovements, movementKey, moveNetworkNode, reconcileJunctionMovements, starterNetwork } from "./model.mjs";
+import { excessJunctionLanes, junctionLanePose, junctionLegs, junctionMovements, laneDropTaper, movementKey, moveNetworkNode, moveRoadLaneAnchor,
+  networkLaneSamples, reconcileJunctionMovements, refreshLaneConnections, removeNetworkRoad, roadCurveFromPull, starterNetwork } from "./model.mjs";
 import { avenueAnchors, avenueLanePath, avenueLaneX, avenuePieces, avenueSegmentAt, avenueSegments, laneSpacing, roadPresets, selectedLane, baseline, world, curve, pointOnCurve, duration, step, validate, greenBounds, mergeEndBounds, mergeTaper, normalizeDesign, replayMarkers, scale, schoolEntry, signalCycle, slipGeometry, slipStartMax, taperLengthBounds, vehicleDimensions, networkLaneWidth, networkNodeIssue, networkNodes, networkRoadGeometry, networkRoadIssue, connectNetworkRoad, nextNetworkNode, splitNetworkRoad, scheduledTrips, terminals, trees, tripTerminals } from "./model.mjs";
 
 const $ = selector => document.querySelector(selector);
@@ -66,11 +67,19 @@ let movementDrag;
 let roadCamera;
 let freeDrag;
 let freeCurve = false;
+let selectedLaneEnd;
+let drawCurveGuide;
+let laneFocus;
+let laneCamera;
+let pickingEndLane = false;
+let laneFocusHeight;
 let drawLanes = { forward: 1, backward: 1 };
+const roadCurveHold = 360;
 const snapping = { grid: false, angle: false, roads: true };
 const networkUndo = [], networkRedo = [];
 let demandTerminal;
 let terminalHold;
+let suppressHeldTouchClickUntil = 0;
 const demandTrips = scheduledTrips(true);
 let inspectorCollapsed = false;
 let camera;
@@ -80,12 +89,21 @@ let suppressMapClick = false;
 let currentRun;
 let time = 0;
 let playing = false;
+let playbackRate = 6;
 let comparing = true;
 let sumoWorker;
 let sumoMessage = "";
 let highlightQueues = false;
 let previousFrame = 0;
 let animationId;
+
+document.addEventListener("pointerdown", () => { suppressHeldTouchClickUntil = 0; }, true);
+document.addEventListener("click", event => {
+  if (event.detail && performance.now() < suppressHeldTouchClickUntil) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
 
 function readSave() {
   try {
@@ -98,14 +116,31 @@ function readSave() {
 function editNetwork(network) {
   if (network === draft.network) return;
   if (draft.network) networkUndo.push(draft.network);
+  if (networkUndo.length > 60) networkUndo.shift();
   networkRedo.length = 0;
   draft.network = reconcileJunctionMovements(network);
 }
 
 function clearNetworkSelection() {
+  clearLaneFocus();
+  pickingEndLane = false;
   freeStart = freeRoad = freeNode = freeApproach = demandTerminal = undefined;
   freeCurve = false;
+  drawCurveGuide = selectedLaneEnd = undefined;
   laneStart = selectedMovement = undefined;
+}
+
+function focusLanePorts(id) {
+  const node = networkNodes(draft.network).get(id);
+  if (!node) return;
+  if (!laneFocus) laneCamera = camera;
+  laneFocus = id;
+  camera = [node.x - 74, node.y - 74, 148, 148];
+}
+
+function clearLaneFocus() {
+  if (laneFocus) camera = laneCamera;
+  laneFocus = laneCamera = laneFocusHeight = undefined;
 }
 
 function save() {
@@ -121,19 +156,47 @@ function mapPoint(event) {
 }
 
 const scenery = `
-  <defs><marker id="lane-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#c4f8ff"/></marker></defs>
-  <rect x="-400" y="-600" width="1300" height="2000" fill="#d4dece"/>
-  <path d="M0 86H211V318H0ZM329 94H500V326H329ZM0 513H208V700H0ZM335 511H500V700H335Z" fill="#e1e6d8"/>
-  <path d="M27 105H212V309H27Z" fill="#c8d5bd"/>
-  <path d="M48 190H131V216H48Z M143 200H199V237H143Z M36 540H126V604H36Z M358 116H406V164H358Z M371 254H431V283H371Z" fill="#eee5d3" stroke="#a9a694" stroke-width="1.3"/>
-  <path d="M64 196H104V203H64Z M151 211H177V220H151Z M53 553H87V568H53Z" fill="#c5bdab"/>
-  <rect x="52" y="228" width="92" height="57" rx="8" fill="#8ea77b"/>
-  <path d="M60 235H136V278H60ZM98 235V278" fill="none" stroke="#e2ead7" stroke-width="1"/>
-  <circle cx="98" cy="256.5" r="8" fill="none" stroke="#e2ead7" stroke-width="1"/>
-  ${trees.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="6" fill="#91a783"/>`).join("")}
-  <g fill="#4c6559" font-size="11" font-family="system-ui" font-weight="600">
-    <text x="53" y="226">Alder School</text>
-  </g>`;
+  <defs>
+    <marker id="lane-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#c4f8ff"/></marker>
+    <pattern id="grass-grain" width="36" height="28" patternUnits="userSpaceOnUse">
+      <path d="M3 8l1-2m10 15 2-2m10-13 2 1m5 15 2-1" fill="none" stroke="#698466" stroke-opacity=".21" stroke-width=".8"/>
+      <path d="m3 23 3 1m13-12 2-1m8 5h3" fill="none" stroke="#ecf1df" stroke-opacity=".45" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect x="-400" y="-600" width="1300" height="2000" fill="#ccd8bf"/>
+  <path d="M-30 84 204 91 220 159 215 310 176 327H-30Z M330 94H525V333L347 322 320 289Z
+    M-30 511 203 518 205 658-30 679Z M334 527 536 508V668L345 682Z" fill="#dce3cd"/>
+  <path d="M22 108 198 102 215 146 207 302 167 316 22 311Z" fill="#b7c9a9" stroke="#e2ead5" stroke-width="2"/>
+  <path d="M337 103h83v66h-83zM355 238h90v59h-90zM25 522h117v96H25z" fill="#c7d4b8" stroke="#a9bc9c" stroke-width=".7" stroke-dasharray="3 3"/>
+  <path d="M-20 380C76 357 118 379 204 364M-20 391C82 365 135 394 212 374M309 485C376 461 452 483 522 463M316 494C384 470 458 493 522 472"
+    fill="none" stroke="#b9c9ad" stroke-width="1.25"/>
+  <rect x="-400" y="-600" width="1300" height="2000" fill="url(#grass-grain)"/>
+  <path d="M44 181H143V217H134V221H44Z M138 192H204V245H138Z" fill="#d7cfb7"/>
+  <path d="M61 216V228M142 215H131M171 237v27l-16 9v29" fill="none" stroke="#e3ddc8" stroke-width="5"/>
+  <g fill="#556751" opacity=".2" transform="translate(3 3)">
+    <path d="M48 190H131V216H48Z M143 200H199V237H143Z M36 540H126V604H36Z M358 116H406V164H358Z M371 254H431V283H371Z"/>
+  </g>
+  <g stroke="#8b8571" stroke-width="1.1" stroke-linejoin="round">
+    <path d="M48 190H131V216H48Z M143 200H199V237H143Z" fill="#b5a48d"/>
+    <path d="M48 190H131L125 202H54Z M143 200H199L192 216H150Z" fill="#ded2b7"/>
+    <path d="M54 202H125L131 216H48Z M150 216H192L199 237H143Z" fill="#c8b89e"/>
+    <path d="M36 540H126V604H36Z M358 116H406V164H358Z M371 254H431V283H371Z" fill="#b6816f"/>
+    <path d="M36 540H126L111 569H51Z M358 116H406L394 139H370Z M371 254H431L421 267H381Z" fill="#d8a88e"/>
+    <path d="M51 569H111L126 604H36Z M370 139H394L406 164H358Z M381 267H421L431 283H371Z" fill="#c9957d"/>
+  </g>
+  <path d="M65 193h18v6H65zM163 204h12v6h-12z" fill="#65808c" stroke="#e4ddcd" stroke-width="1"/>
+  <path d="M69 193v6m5-6v6m5-6v6m88 5v6m4-6v6" stroke="#9eb5bd" stroke-width=".65"/>
+  <path d="M65 555h8v8h-8zM378 123h6v7h-6zM409 257h6v6h-6z" fill="#76594e"/>
+  <rect x="52" y="228" width="92" height="57" rx="6" fill="#819d70" stroke="#d7e2c7" stroke-width="1.5"/>
+  <path d="M61 234h9v45h-9zm18 0h9v45h-9zm18 0h9v45h-9zm18 0h9v45h-9zm18 0h4v45h-4z" fill="#a6bb8d" opacity=".5"/>
+  <path d="M59 235H137V278H59ZM98 235V278M59 246h11v21H59m78-21h-11v21h11" fill="none" stroke="#e4edda" stroke-width="1"/>
+  <circle cx="98" cy="256.5" r="7" fill="none" stroke="#e4edda" stroke-width="1"/>
+  ${trees.map(([x, y], i) => `<g transform="translate(${x} ${y})">
+    <ellipse cx="1.7" cy="2.2" rx="5.6" ry="4.3" fill="#50674c" opacity=".21"/>
+    <circle r="5.6" fill="${i % 3 === 1 ? "#758f66" : "#819b70"}"/>
+    <path d="M-4 1c-2-4 1-6 4-5 3 0 4 2 3 4-2-2-4 2-7 1Z" fill="#a5b88d"/>
+  </g>`).join("")}
+  <text x="53" y="225" fill="#46634f" font-size="10" font-family="system-ui" font-weight="670">Alder School</text>`;
 const avenue = `
   <path d="M236 -1000H294V1600H236Z" fill="#e9e7d8"/>
   <path d="M239 -1000H291V1600H239Z" fill="#46525b"/>
@@ -203,13 +266,12 @@ function handle(kind, x, y, selected = true) {
   </g>`;
 }
 
-function mapMarkup(config, run, editing) {
+function mapMarkup(config, editing) {
   const primary = curve(config, 1);
   const secondary = curve(config, 2);
   const main = config.lanes & 1;
   const aux = config.lanes & 2;
   const selectedGeometry = main ? primary : secondary;
-  const frame = run?.frames[Math.floor(time / step + 1e-8)];
   let content = scenery + (config.network ? freeNetworkMarkup(config.network, editing) :
     config.road == null ? avenue : avenueMarkup(config));
   if (editing && tool === "road" && config.road?.length === 0) return content + roadTargets(config);
@@ -238,28 +300,12 @@ function mapMarkup(config, run, editing) {
   if (!config.network && !config.signalRight) content += turnBan(world.outer + 14, world.signal + 23);
   if (!config.network && config.schoolAccess && !config.schoolRight) content += turnBan(world.outer + 15, school.start.y + 5);
 
-  const phase = frame?.phase ?? "all-red";
   const light = (road, x, y) => {
-    const color = phase === road ? "#9ee6a2" : phase === road + "-yellow" ? "#ffca74" : "#ff987d";
-    return `<circle cx="${x}" cy="${y}" r="5" fill="#263944"/><circle cx="${x}" cy="${y}" r="2.8" fill="${color}"/>`;
+    return `<circle cx="${x}" cy="${y}" r="5" fill="#263944"/><circle data-signal-approach="${road}" cx="${x}" cy="${y}" r="2.8" fill="#ff987d"/>`;
   };
   if (!config.network) content += light("avenue", 245, 197) + light("cross", 229, 172);
   if (editing && tool === "signal") {
     content += '<path d="M254 210V365 M208 180H72" stroke="#c4f8ff" stroke-width="3" opacity=".8" stroke-dasharray="6 5"/>';
-  }
-  if (!editing && frame) {
-    content += replayMarkers(run.frames, time).map(car => {
-      const { length: metres, width } = vehicleDimensions(car.kind);
-      const length = metres / scale;
-      const halfWidth = width / scale / 2;
-      const fill = car.reason ? "#ffc578" : car.kind === "bus" ? "#b9f8ff" : "#e4e9e4";
-      const ring = highlightQueues && car.reason && car.zone === frame.queueZone
-        ? `<rect x="${-length / 2 - 1}" y="${-halfWidth - 1}" width="${length + 2}" height="${halfWidth * 2 + 2}" rx="2" fill="none" stroke="#ffab49" stroke-width="1"/>`
-        : "";
-      return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})">${ring}
-        <rect x="${-length / 2}" y="${-halfWidth}" width="${length}" height="${halfWidth * 2}" rx="1.7" fill="${fill}"/>
-        <rect x="${length / 2 - 2.5}" y="${-halfWidth * .65}" width="1.5" height="${halfWidth * 1.3}" rx=".4" fill="#416270"/></g>`;
-    }).join("");
   }
   if (editing && !config.network) {
     const { start, a, b, end, path } = selectedGeometry;
@@ -296,9 +342,32 @@ function mapMarkup(config, run, editing) {
     }
   }
   if (editing && tool === "slip") content += slipHandles(config);
-  if (editing && tool === "junction") content += junctionMarkers(config);
+  if (editing && !config.network && tool === "junction") content += junctionMarkers(config);
   if (editing && !config.network && tool === "road") content += roadTargets(config);
   return content;
+}
+
+const vehicleColors = { car: "#eef1e4", bus: "#8ee4ff", pickup: "#bfaaf2", queue: "#ffd191" };
+
+function inPeakQueue(car, frame) {
+  return car.reason && (frame.queueLane ? car.lane === frame.queueLane : car.zone === frame.queueZone);
+}
+
+function vehicleMarkup(car, frame) {
+  const { length, width } = vehicleDimensions(car.kind);
+  const half = length / scale / 2, beam = width / scale / 2;
+  const fill = vehicleColors[car.reason ? "queue" : car.kind];
+  const ring = highlightQueues && inPeakQueue(car, frame)
+    ? `<rect x="${-half - 1}" y="${-beam - 1}" width="${2 * half + 2}" height="${2 * beam + 2}" rx="2" fill="#ffbd613d" stroke="#ffab49" stroke-width="1"/>`
+    : "";
+  const bus = car.kind === "bus";
+  const window = half * (bus ? .7 : .38);
+  return `<g transform="translate(${car.x} ${car.y}) rotate(${car.angle * 180 / Math.PI})" class="vehicle ${car.kind}${car.reason ? " queued" : ""}">${ring}
+    <rect x="${-half + .35}" y="${-beam + .48}" width="${2 * half}" height="${2 * beam}" rx="${beam}" fill="#203340" opacity=".65"/>
+    <rect x="${-half}" y="${-beam}" width="${2 * half}" height="${2 * beam}" rx="${bus ? .65 : beam * .72}" fill="${fill}" stroke="#293c47" stroke-width=".38"/>
+    <path d="M${window} ${-beam * .72}v${beam * 1.44}M${-window} ${-beam * .65}v${beam * 1.3}" stroke="#3c6070" stroke-width="${bus ? 1.2 : .82}"/>
+    <path d="M${-half + .55} ${-beam * .66}v${beam * .34}m0 ${beam * .63}v${beam * .34}" fill="none" stroke="#bd5557" stroke-width=".48"/>
+    ${bus ? `<path d="M${-window + 1.3} ${-beam * .64}H${window - 1.3}M${-window + 1.3} ${beam * .64}H${window - 1.3}" stroke="#487f95" stroke-width=".48" stroke-dasharray="1.15 .45"/>` : ""}</g>`;
 }
 
 function yieldSign(x, y) {
@@ -571,39 +640,48 @@ function freeNetworkMarkup(network, editing) {
         paint-order="stroke" font-size="12" font-weight="750">${name}</text>`;
   };
   const roads = network.roads.map((road, index) => {
-    const { path, samples } = networkRoadGeometry(road, nodes);
-    // Match the right-hand lane offsets used by the simulation.
-    const strokes = Array.from({ length: road.forward + road.backward }, (_, lane) => {
-      const offset = (lane - road.backward + .5) * networkLaneWidth;
-      const points = samples.filter((_, i) => i % 5 === 0).map(({ x, y, angle }) =>
-        `${x - Math.sin(angle) * offset},${y + Math.cos(angle) * offset}`).join(" ");
-      return `<polyline points="${points}" fill="none" stroke="${editing && index === freeRoad ? "#226581" : "#46525b"}" stroke-width="${networkLaneWidth + .5}"/>`;
-    }).join("");
+    const geometry = networkRoadGeometry(road, nodes);
+    const { path, samples } = geometry;
     const selected = editing && tool === "road" && index === freeRoad;
+    const lanePaths = [true, false].flatMap(forward => Array.from({ length: forward ? road.forward : road.backward }, (_, lane) =>
+      networkLaneSamples(road, network, nodes, forward, lane, geometry).map(({ x, y }) => `${x},${y}`).join(" ")));
+    const stroke = (color, width) => lanePaths.map(points =>
+      `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${width}"/>`).join("");
     const divider = Array.from({ length: road.forward + road.backward - 1 }, (_, lane) => {
       const offset = (lane + 1 - road.backward) * networkLaneWidth;
       const points = samples.filter((_, i) => i % 5 === 0).map(({ x, y, angle }) =>
         `${x - Math.sin(angle) * offset},${y + Math.cos(angle) * offset}`).join(" ");
-      return `<polyline points="${points}" fill="none" stroke="${offset === 0 ? "#e6cb8d" : "#e6e9e5"}" stroke-width="1" stroke-dasharray="4 4"/>`;
+      return `<polyline points="${points}" fill="none" stroke="${offset === 0 ? "#ecc98f" : "#e3e6da"}" stroke-width="1" stroke-dasharray="4 4"/>`;
+    }).join("");
+    const mergeMarks = [true, false].flatMap(forward => {
+      const drops = laneDropTaper(network, road, nodes, forward);
+      return Array.from({ length: drops }, (_, lane) => {
+        const points = networkLaneSamples(road, network, nodes, forward, lane, geometry);
+        const p = points[Math.max(2, points.length - 6)];
+        return `<path d="M-4 0h3l5-2m-3-1 3 1-2 3" fill="none" stroke="#f0dc9e" stroke-width="1.05"
+          transform="translate(${p.x} ${p.y}) rotate(${p.angle * 180 / Math.PI})" pointer-events="none"/>`;
+      });
     }).join("");
     const arrows = selected ? [["forward", samples[38], 0], ["backward", samples[62], 180]].map(([direction, point, turn]) =>
       road[direction] ? `<path d="M-5-4L3 0-5 4" fill="none" stroke="#c4f8ff" stroke-width="2" pointer-events="none"
         transform="translate(${point.x} ${point.y}) rotate(${point.angle * 180 / Math.PI + turn})"/>` : "").join("") : "";
-    return `<g>${strokes}<g pointer-events="none">${divider}</g>${arrows}
-      ${editing && tool === "road" && roadMode !== "draw" ? `<path d="${path}" data-free-road="${index}" role="button" tabindex="0" aria-label="Road ${index + 1}"
-        aria-pressed="${selected}" fill="none" stroke="transparent" stroke-width="${Math.max(25, 2 * networkLaneWidth * Math.max(road.forward, road.backward))}"/>` : ""}</g>`;
+    const hitPath = road.laneA || road.laneB ? `M${lanePaths[0].replaceAll(" ", "L")}` : path;
+    return `<g>${stroke("#e4e9d4", networkLaneWidth + 1.8)}${stroke(selected ? "#206483" : "#404d55", networkLaneWidth + .45)}
+      <g pointer-events="none">${divider}</g>${arrows}${mergeMarks}
+      ${editing && tool === "road" && roadMode !== "draw" ? `<path d="${hitPath}" data-free-road="${index}" role="button" tabindex="0" aria-label="Road ${index + 1}"
+        aria-pressed="${selected}" fill="none" stroke="transparent" stroke-width="${Math.max(21, 2 * networkLaneWidth * Math.max(road.forward, road.backward))}"/>` : ""}</g>`;
   }).join("");
   const stubs = Object.values(terminals).map(({ x, y, dx, dy }) =>
     `<path d="M${x} ${y}l${dx} ${dy}" stroke="#46525b" stroke-width="12"/>`).join("");
   if (!editing) return stubs + roads;
-  const start = nodes.get(freeStart);
+  const start = drawStartPoint(network);
   const preview = freeDrag?.point;
-  const previewMarkup = preview ? `<g pointer-events="none">
-    ${start && roadMode === "draw" ? `<path d="M${start.x} ${start.y}L${preview.x} ${preview.y}" stroke="#0f7090"
-      stroke-width="${Math.max(3, (drawLanes.forward + drawLanes.backward) * networkLaneWidth)}" stroke-dasharray="6 5"/>` : ""}
-    <circle cx="${preview.x}" cy="${preview.y}" r="9" fill="#c4f8ff" stroke="#0f4b70" stroke-width="2"/></g>` : "";
+  const guide = drawCurveGuide;
+  const endpoint = guide?.target ?? (freeDrag?.kind === "draw" || freeDrag?.kind === "draw-end" || freeDrag?.kind === "curve-draw" ? preview : undefined);
+  const controls = guide && start && roadCurveFromPull(drawAnchorPoint(network, freeStart), drawAnchorPoint(network, endpoint), guide.delta);
+  const previewMarkup = roadGestureMarkup(start, endpoint, controls, guide, preview);
   const selectedJunction = network.nodes.find(node => node.id === freeNode);
-  const approaches = tool === "road" && roadMode === "select" && selectedJunction?.control === "priority" && !selectedJunction.movements ? incomingApproaches(network, freeNode).map(approach => {
+  const approaches = tool === "road" && roadMode === "select" && !selectedLaneEnd && selectedJunction?.control === "priority" && !selectedJunction.movements ? incomingApproaches(network, freeNode).map(approach => {
     const { x, y } = approach.point;
     return `<g class="road-target" data-approach="${approach.index}" role="button" tabindex="0"
       aria-label="${approach.label}" aria-pressed="${freeApproach === approach.index}">
@@ -614,10 +692,10 @@ function freeNetworkMarkup(network, editing) {
   }).join("") : "";
   const pins = intersection ? "" : [...nodes.values()].map(node => {
     const { id, x, y } = node;
-    const active = id === freeStart || id === freeNode || id === demandTerminal;
-    return `<g class="road-target" data-free-node="${id}" role="button" tabindex="0" aria-label="${node.name ? node.name + " connection" : "Junction " + id.slice(1)}">
-      <circle cx="${x}" cy="${y}" r="19" fill="transparent"/>
-      <circle cx="${x}" cy="${y}" r="${active ? 11 : node.name || roadMode === "draw" ? 9 : 7}" fill="${active || roadMode === "draw" ? "#c4f8ff" : node.control === "traffic_light" ? "#398257" : node.control === "allway_stop" ? "#a13f38" : "#0f4b70"}" stroke="${active || roadMode === "draw" ? "#0f4b70" : "#c4f8ff"}" stroke-width="2"/>
+    const active = id === freeStart?.id || id === freeNode || id === demandTerminal;
+    return `<g class="road-target" data-free-node="${id}" role="button" tabindex="0" aria-label="${node.name ? node.name + " connection" : "Junction " + id.slice(1)}" aria-pressed="${active}">
+      <circle cx="${x}" cy="${y}" r="${Math.min(21, 13 / mapScale())}" fill="transparent"/>
+      <circle cx="${x}" cy="${y}" r="${active ? 9 : node.name || roadMode === "draw" ? 8 : 6.5}" fill="${active || roadMode === "draw" ? "#c4f8ff" : node.control === "traffic_light" ? "#398257" : node.control === "allway_stop" ? "#a13f38" : "#0f4b70"}" stroke="${active || roadMode === "draw" ? "#0f4b70" : "#c4f8ff"}" stroke-width="2"/>
       ${node.name ? label(x, y + (id === "north" ? 23 : -15), node.name) : ""}</g>`;
   }).join("");
   const segment = network.roads[freeRoad];
@@ -635,8 +713,124 @@ function freeNetworkMarkup(network, editing) {
   const grid = snapping.grid && (roadMode === "draw" || freeNode && !terminals[freeNode]) ?
     '<defs><pattern id="snap-grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle r="1.3" fill="#0f4b70" opacity=".38"/></pattern></defs><rect x="8" y="68" width="484" height="554" fill="url(#snap-grid)" pointer-events="none"/>' : "";
   return grid + stubs + roads + '<defs><marker id="demand-arrow" orient="auto" markerWidth="4" markerHeight="4" refX="3.5" refY="2"><path d="M0 0L4 2L0 4Z" fill="#0f7090"/></marker></defs>'
-    + `<g data-demand-layer pointer-events="none">${demandMarkup()}</g>` + approaches + pins + previewMarkup + handles
+    + `<g data-demand-layer pointer-events="none">${demandMarkup()}</g>` + approaches + pins + `<g data-road-preview>${previewMarkup}</g>` + handles
+    + (tool === "road" ? roadLaneAnchors(network, nodes) : "")
     + (intersection ? intersectionMarkup(network, intersection) : "");
+}
+
+function roadGestureMarkup(start, endpoint, controls, guide, preview) {
+  if (freeDrag?.kind === "move" && preview) {
+    const network = draft.network;
+    const nodes = networkNodes(network);
+    const legs = junctionLegs(network, freeDrag.id);
+    const paths = legs.map(leg => {
+      const geometry = networkRoadGeometry(leg.road, nodes);
+      const { a, b, start, end } = geometry;
+      const dx = preview.x - (leg.atA ? start.x : end.x), dy = preview.y - (leg.atA ? start.y : end.y);
+      const controls = leg.atA ? [a.x + dx, a.y + dy, b.x, b.y] : [a.x, a.y, b.x + dx, b.y + dy];
+      return `<path d="${draftRoadPath(leg.atA ? preview : start, leg.atA ? end : preview, controls)}" fill="none"
+        stroke="#55bcd4" stroke-width="${Math.max(3, (leg.road.forward + leg.road.backward) * networkLaneWidth)}" stroke-opacity=".65"/>`;
+    }).join("");
+    return `<g pointer-events="none">${paths}<circle cx="${preview.x}" cy="${preview.y}" r="8" fill="#c4f8ff" stroke="#0f4b70" stroke-width="2"/></g>`;
+  }
+  if (freeDrag?.kind === "lane" && preview) {
+    const { start: a, end: b } = networkRoadGeometry(draft.network.roads[freeRoad], networkNodes(draft.network));
+    const other = freeDrag.end === "a" ? b : a;
+    return `<path d="${draftRoadPath(other, preview)}" fill="none" stroke="#7ee2e5" stroke-width="5" stroke-dasharray="4 4" pointer-events="none"/>`;
+  }
+  return endpoint && start && roadMode === "draw" ? `<g pointer-events="none">
+    <path d="${draftRoadPath(start, endpoint, controls)}" stroke="#eef7df" stroke-opacity=".8"
+      fill="none" stroke-width="${drawWidth() + 3}" stroke-linecap="round"/>
+    <path d="${draftRoadPath(start, endpoint, controls)}" stroke="#1d7592" fill="none"
+      stroke-width="${drawWidth()}" stroke-opacity=".79" stroke-dasharray="6 4" stroke-linecap="round"/>
+    ${guide ? `<line x1="${endpoint.x}" y1="${endpoint.y}" x2="${guide.finger.x}" y2="${guide.finger.y}" stroke="#c4f8ff" stroke-width="${1.25 / mapScale()}" stroke-dasharray="3 3"/>
+      <g class="draw-curve-ball" transform="translate(${guide.finger.x} ${guide.finger.y - 25 / mapScale()}) scale(${1 / mapScale()})">
+      <circle r="16" fill="#174157" fill-opacity=".84" stroke="#c4f8ff" stroke-width="2"/>
+      <ellipse rx="8" ry="14" fill="none" stroke="#b1dfec" stroke-opacity=".66"/>
+      <ellipse rx="14" ry="6" fill="none" stroke="#b1dfec" stroke-opacity=".66"/></g>` : ""}
+    <circle cx="${endpoint.x}" cy="${endpoint.y}" r="${5 / mapScale()}" fill="#c4f8ff" stroke="#0f4b70" stroke-width="${2 / mapScale()}"/></g>` : "";
+}
+
+function mapScale() {
+  return map.getScreenCTM()?.a || 1;
+}
+
+function drawStartPoint(network) {
+  return freeStart && (freeStart.anchor ? freeStart : networkNodes(network).get(freeStart.id) ?? freeStart);
+}
+
+function drawAnchorPoint(network, point) {
+  return point.id ? networkNodes(network).get(point.id) : point;
+}
+
+function drawWidth() {
+  return (freeStart?.anchor || drawCurveGuide?.target.anchor ? 1 : drawLanes.forward + drawLanes.backward) * networkLaneWidth;
+}
+
+function draftRoadPath(start, end, controls) {
+  return `M${start.x} ${start.y} ${controls ? `C${controls.join(" ")}` : "L"} ${end.x} ${end.y}`;
+}
+
+function availableLaneAnchors(network, nodes, direction, { exclude, end, all = false } = {}) {
+  const ports = [];
+  for (const node of nodes.values()) {
+    if (node.id === exclude || laneFocus && node.id !== laneFocus) continue;
+    const legs = junctionLegs(network, node.id, nodes);
+    const hostLegs = legs.filter(leg => !leg.slip);
+    const setback = Math.min(39, Math.max(laneFocus ? 29 : 21, 23 / mapScale()));
+    for (const leg of hostLegs) {
+      const excess = excessJunctionLanes(hostLegs, leg, direction);
+      const count = all || hostLegs.length === 1 ? leg[direction] : excess;
+      for (let lane = 0; lane < count; lane++) {
+        const taken = direction === "incoming" && lane < excess &&
+          legs.some(item => item.departureAnchor?.neighbor === leg.neighbor && item.departureAnchor.lane === lane);
+        if (taken && end !== "a") continue;
+        ports.push({ id: node.id, anchor: { neighbor: leg.neighbor, lane }, direction, excess: lane < excess,
+          ...junctionLanePose(leg, nodes, direction, lane, setback) });
+      }
+    }
+  }
+  return ports;
+}
+
+const lanePortKey = port => `${port.id}:${port.anchor.neighbor}:${port.anchor.lane}`;
+
+function lanePortMarkup(port, active) {
+  const { id, x, y, anchor, direction } = port;
+  const radius = Math.min(4.2, Math.max(2.7, 3.1 / mapScale()));
+  const color = direction === "incoming" ? "#8ceccf" : "#b9c7ff";
+  return `<g class="road-target lane-anchor${port.excess ? " extra-lane" : ""}" data-road-lane="${lanePortKey(port)}" data-anchor-node="${id}"
+    data-anchor-neighbor="${anchor.neighbor}" data-anchor-lane="${anchor.lane}" role="button" tabindex="0"
+    aria-pressed="${active}" aria-label="${direction === "incoming" ? "Start from" : "Connect to"} lane ${anchor.lane + 1} ${direction === "incoming" ? "from" : "toward"} ${terminals[anchor.neighbor]?.name ?? "junction " + anchor.neighbor.slice(1)} at ${terminals[id]?.name ?? "junction " + id.slice(1)}">
+    <circle cx="${x}" cy="${y}" r="${Math.min(radius + 2, 6)}" fill="transparent"/>
+    <circle cx="${x}" cy="${y}" r="${radius}" fill="${active ? "#fff0b4" : color}" stroke="#153d4e" stroke-width="1.15"/>
+    <path d="M${x - radius * .52} ${y}h${radius * 1.04}m${-radius * .52} ${-radius * .52}v${radius * 1.04}" fill="none" stroke="#153d4e" stroke-width="1" pointer-events="none"/>
+    </g>`;
+}
+
+function roadLaneAnchors(network, nodes) {
+  const road = network.roads[freeRoad];
+  if (roadMode === "draw") {
+    const direction = freeStart ? "outgoing" : "incoming";
+    const options = availableLaneAnchors(network, nodes, direction, { all: !!laneFocus || !freeStart && drawLanes.forward === 1 && !drawLanes.backward,
+      exclude: freeStart?.id });
+    return options.map(port => lanePortMarkup(port, false)).join("") +
+      (freeStart?.anchor ? lanePortMarkup({ ...freeStart, direction: "incoming" }, true) : "");
+  }
+  if (roadMode !== "select" || !road || road.forward !== 1 || road.backward || freeCurve) return "";
+  const path = networkLaneSamples(road, network, nodes, true, 0);
+  const handles = [["a", path[4]], ["b", path.at(-5)]].filter(([end]) => !selectedLaneEnd || selectedLaneEnd === end)
+    .map(([end, point]) => `<g class="road-target lane-anchor" data-lane-end="${end}" role="button" tabindex="0"
+    aria-label="Lane ${end === "a" ? "start" : "end"} handle">
+    <circle cx="${point.x}" cy="${point.y}" r="${Math.min(11, 12 / mapScale())}" fill="transparent"/>
+    <circle cx="${point.x}" cy="${point.y}" r="${Math.min(5.4, 6 / mapScale())}" fill="#b9c7ff" stroke="#153d4e" stroke-width="1.6"/></g>`).join("");
+  if (selectedLaneEnd || freeDrag?.kind === "lane") {
+    const end = selectedLaneEnd ?? freeDrag.end;
+    const options = availableLaneAnchors(network, nodes, end === "a" ? "incoming" : "outgoing",
+      { all: !!laneFocus || !!freeDrag, end, exclude: road[end === "a" ? "b" : "a"] });
+    return handles + options.map(port => lanePortMarkup(port, false)).join("");
+  }
+  return handles;
 }
 
 function intersectionLanes(network, node) {
@@ -700,6 +894,12 @@ function destinationCounts(id) {
   return [...counts].sort((a, b) => b[1] - a[1]);
 }
 
+function demandDetails(id) {
+  const destinations = destinationCounts(id);
+  return `<div class="terminal-demand" role="status"><strong>From ${terminals[id].name}</strong>
+    <p>${destinations.length ? destinations.map(([to, count]) => `${terminals[to].name} · ${count} trips`).join(" / ") : "Arrival only"}</p></div>`;
+}
+
 function incomingApproaches(network, nodeId) {
   if (!nodeId || terminals[nodeId]) return [];
   const nodes = networkNodes(network);
@@ -737,9 +937,10 @@ function freeControls() {
     ["redo", "Redo", 'data-action="network-redo"', undefined, !networkRedo.length],
     ["erase", "Clear map", 'data-action="clear-map"', undefined, !draft.network.roads.length && !draft.network.nodes.length]
   ];
+  const shortLabels = { draw: "Draw", select: "Select", node: "Add", curve: "Curve", undo: "Undo", redo: "Redo", erase: "Clear" };
   const tools = buttons.map(([symbol, label, data, active, disabled]) =>
     `<button ${data} aria-label="${label}" title="${label}" ${active === undefined ? "" : `aria-pressed="${active}"`}
-      ${disabled ? "disabled" : ""}>${icon(symbol)}</button>`).join("");
+      ${disabled ? "disabled" : ""}>${icon(symbol)}<span class="tool-label">${shortLabels[symbol]}</span></button>`).join("");
   const snaps = roadMode === "draw" || node || roadMode === "split" ? `<div class="snap-controls" aria-label="Snapping">
     ${[["grid", "Grid", "grid"], ["angle", "Angle", "angle"], ["roads", "Roads", "road"]].map(([key, label, symbol]) =>
       `<button data-snap-option="${key}" aria-label="Snap to ${label.toLowerCase()}" aria-pressed="${snapping[key]}">${icon(symbol)}${label}</button>`).join("")}</div>` : "";
@@ -748,13 +949,26 @@ function freeControls() {
   const counts = (direction, side) => `<div class="lane-count">
     <button data-free-count="${direction}:1" aria-label="Add lane ${side}" ${lanes[direction] >= 4 ? "disabled" : ""}>${laneArtwork(lanes.forward, lanes.backward, side)}<span>+ ${side}</span></button>
     <button data-free-count="${direction}:-1" aria-label="Remove lane ${side}" ${!lanes[direction] || lanes.forward + lanes.backward === 1 ? "disabled" : ""}>−</button></div>`;
+  const laneEnds = segment?.forward === 1 && !segment.backward && !freeCurve ? `<div class="row chips lane-edit-actions">
+    <button data-action="move-lane-a" aria-pressed="${selectedLaneEnd === "a"}">Move lane start</button>
+    <button data-action="move-lane-b" aria-pressed="${selectedLaneEnd === "b"}">Move lane end</button>
+    ${laneFocus ? '<button data-action="lane-overview">Map overview</button>' : ""}</div>` : "";
+  const branch = freeStart?.anchor ? `<div class="row chips lane-edit-actions">
+    <button data-action="finish-lane">Keep lane merge</button>
+    ${laneFocus ? '<button data-action="lane-overview">Map overview</button>' : ""}</div>` :
+    roadMode === "draw" && drawLanes.forward === 1 && !drawLanes.backward && freeStart?.id && !laneFocus ?
+      `<div class="row chips lane-edit-actions"><button data-action="start-lane-picker">Choose start lane</button>
+      <button data-action="end-lane-picker" aria-pressed="${pickingEndLane}">Choose end lane</button></div>` :
+      roadMode === "draw" && laneFocus ? '<div class="row chips lane-edit-actions"><button data-action="lane-overview">Map overview</button></div>' : "";
   return `<div class="builder-tools" aria-label="Road Builder tools">${tools}</div>${snaps}
     ${node ? `<div class="row chips">
+      <button data-action="move-free-node">Move node</button>
       <button data-control="priority" aria-pressed="${node.control === "priority"}">Unsignalized</button>
       <button data-control="allway_stop" aria-pressed="${node.control === "allway_stop"}">All-way stop</button>
       <button data-control="traffic_light" aria-pressed="${node.control === "traffic_light"}">Traffic light</button></div>` : ""}
     ${approachControls}
-    ${lanes && !freeCurve ? `<div class="lane-cards" aria-label="Road types">
+    ${laneEnds}${branch}
+    ${lanes && !freeCurve && !selectedLaneEnd && !freeStart?.anchor ? `<div class="lane-cards" aria-label="Road types">
       ${preset("One-way", 1, 0)}${preset("Two-lane", 1, 1)}${preset("Three-lane", 2, 1)}${preset("Four-lane", 2, 2)}</div>
       <div class="lane-adjustments">${counts("backward", "left")}${counts("forward", "right")}
         ${segment ? `<button data-action="reverse-road" aria-label="Flip lane directions" title="Flip lane directions">${icon("reverse")}</button>
@@ -770,7 +984,7 @@ function intersectionControls(node) {
   ];
   const toolbar = node ? `<div class="builder-tools junction-tools" aria-label="Movement tools">${buttons.map(([symbol, label, mode, disabled]) =>
     `<button aria-label="${label}" title="${label}" ${mode ? `data-junction-mode="${mode}" aria-pressed="${mode === junctionMode}"` :
-      `data-action="network-${symbol}"`} ${disabled ? "disabled" : ""}>${icon(symbol)}</button>`).join("")}</div>` : "";
+      `data-action="network-${symbol}"`} ${disabled ? "disabled" : ""}>${icon(symbol)}<span class="tool-label">${label.split(" ")[0]}</span></button>`).join("")}</div>` : "";
   const card = (symbol, label, data, active, disabled = false) =>
     `<button ${data} aria-pressed="${active}" ${disabled ? "disabled" : ""}>${icon(symbol)}<span>${label}</span></button>`;
   return toolbar + (node ? `<div class="junction-cards" aria-label="Intersection controls">
@@ -847,11 +1061,12 @@ function laneArtwork(forward, backward, addedSide) {
     return `<path d="M0 4V-4m-2 3 2-3 2 3" transform="translate(${x} 33) rotate(${i < backward ? 180 : 0})"/>`;
   }).join("");
   return `<svg viewBox="0 0 80 50" aria-hidden="true">
-    <path fill="#a5d8e0" d="M0 0h80v50H0z"/><path fill="#91b08a" d="M0 17 16 10l13 5 13-6 20 4 18-4v41H0Z"/>
-    <path fill="#b1c4a3" d="M0 23 24 15h42l14 7v28H0Z"/>
-    <path d="M${horizon(0)} 14H${horizon(1)}L${edge(1)} 50H${edge(0)}Z" fill="#344755" stroke="#edf0df" stroke-width="1.5"/>
+    <path fill="#b7d9db" d="M0 0h80v50H0z"/><path fill="#91ac8a" d="M0 15 15 9l16 5 13-7 19 5 17-4v42H0Z"/>
+    <path fill="#adbf9e" d="M0 23 24 15h42l14 7v28H0Z"/><path d="M0 35 21 30m40 2 19 5M0 45l16-3m49 1 15 4" stroke="#c5d4ad" opacity=".7"/>
+    <path d="M${horizon(0) - 1.5} 14H${horizon(1) + 1.5}L${edge(1) + 4} 50H${edge(0) - 4}Z" fill="#d7d8bf"/>
+    <path d="M${horizon(0)} 14H${horizon(1)}L${edge(1)} 50H${edge(0)}Z" fill="#374751" stroke="#e6e7d3" stroke-width="1"/>
     ${addedSide ? `<path d="M${horizon(addedSide === "left" ? 0 : 1)} 14l${addedSide === "left" ? -4 : 4} 0 ${addedSide === "left" ? -10 : 10} 36h${addedSide === "left" ? 14 : -14}Z" fill="#80dbea"/>` : ""}
-    ${markings}<g fill="none" stroke="#f5fbff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${arrows}</g></svg>`;
+    ${markings}<g fill="none" stroke="#f5fbff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${arrows}</g></svg>`;
 }
 
 function replaceFreeRoad(updates) {
@@ -908,9 +1123,36 @@ function snapPoint(point, source, id, exclude) {
   return { x: Math.round(x), y: Math.round(y) };
 }
 
-function drawNetworkRoad(point) {
-  if (point.id === freeStart) return;
+function drawNetworkRoad(point, pull) {
+  const start = drawStartPoint(draft.network);
+  if (!start || point.id && point.id === freeStart.id) {
+    roadMessage = "Choose a different endpoint.";
+    return;
+  }
   let network = draft.network;
+  let a = freeStart.id;
+  if (!a) {
+    const origin = nextNetworkNode(network, freeStart);
+    roadMessage = networkNodeIssue(origin) ?? "";
+    if (roadMessage) return;
+    if (freeStart.index !== undefined) {
+      const result = splitNetworkRoad(network, freeStart.index, origin, freeStart.t);
+      if (!result.network) {
+        roadMessage = result.issue;
+        return;
+      }
+      network = result.network;
+      if (point.index !== undefined) {
+        const offset = point.index > freeStart.index ? 1 : 0;
+        if (point.index === freeStart.index) {
+          roadMessage = "Start and end on different roads.";
+          return;
+        }
+        point = { ...point, index: point.index + offset };
+      }
+    } else network = { ...network, nodes: [...network.nodes, origin] };
+    a = origin.id;
+  }
   const node = point.id ? undefined : nextNetworkNode(network, point);
   if (node) {
     roadMessage = networkNodeIssue(node) ?? "";
@@ -924,13 +1166,53 @@ function drawNetworkRoad(point) {
       network = result.network;
     } else network = { ...network, nodes: [...network.nodes, node] };
   }
-  const road = { a: freeStart, b: point.id ?? node.id, ...drawLanes, bend: 0 };
+  const b = point.id ?? node.id;
+  const nodes = networkNodes(network);
+  const controls = pull && roadCurveFromPull(nodes.get(a), nodes.get(b), pull);
+  const attached = freeStart.anchor || point.anchor;
+  const road = { a, b, ...(attached ? { forward: 1, backward: 0 } : drawLanes), bend: 0,
+    ...(freeStart.anchor ? { laneA: freeStart.anchor } : {}), ...(point.anchor ? { laneB: point.anchor } : {}),
+    ...(controls ? { controls } : {}) };
   const result = connectNetworkRoad(network, road);
   roadMessage = result.issue ?? "";
   if (result.network) {
-    editNetwork(result.network);
-    freeStart = node && point.index === undefined ? node.id : undefined;
+    editNetwork(attached ? refreshLaneConnections(result.network, road) : result.network);
+    freeStart = node && point.index === undefined ? { id: node.id } : undefined;
+    pickingEndLane = false;
+    clearLaneFocus();
   }
+}
+
+function lanePortFromTarget(target) {
+  const port = target?.closest("[data-road-lane]");
+  if (!port) return undefined;
+  const { anchorNode: id, anchorNeighbor: neighbor, anchorLane } = port.dataset;
+  const circle = port.querySelector("circle");
+  return { id, anchor: { neighbor, lane: Number(anchorLane) }, x: circle.cx.baseVal.value, y: circle.cy.baseVal.value };
+}
+
+function lanePortNear(point, direction, options) {
+  const network = draft.network;
+  let nearest, distance = Math.min(7, 11 / mapScale());
+  for (const port of availableLaneAnchors(network, networkNodes(network), direction, options)) {
+    const gap = Math.hypot(point.x - port.x, point.y - port.y);
+    if (gap < distance) {
+      nearest = port;
+      distance = gap;
+    }
+  }
+  return nearest;
+}
+
+function shiftLaneEnd(end, point) {
+  const result = moveRoadLaneAnchor(draft.network, freeRoad, end, point);
+  roadMessage = result.issue ?? "";
+  if (!result.network) return;
+  editNetwork(result.network);
+  const index = draft.network.roads.findIndex(road => road.a === result.road.a && road.b === result.road.b);
+  freeRoad = index < 0 ? undefined : index;
+  selectedLaneEnd = undefined;
+  clearLaneFocus();
 }
 
 function reshapeNetworkRoad(index, handle, point) {
@@ -964,7 +1246,26 @@ function editFreeMap(target, point) {
   const network = draft.network;
   const id = target?.closest("[data-free-node]")?.dataset.freeNode;
   const roadIndex = target?.closest("[data-free-road]")?.dataset.freeRoad;
+  const end = target?.closest("[data-lane-end]")?.dataset.laneEnd;
+  const port = lanePortFromTarget(target);
   roadMessage = "";
+  if (end) {
+    selectedLaneEnd = end;
+    focusLanePorts(network.roads[freeRoad][end]);
+    render();
+    return;
+  }
+  if (selectedLaneEnd && (port || id || point) && roadMode === "select") {
+    const road = network.roads[freeRoad];
+    if (!port && id && id !== laneFocus) {
+      focusLanePorts(id);
+      render();
+      return;
+    }
+    if (road) shiftLaneEnd(selectedLaneEnd, port ?? snapPoint(point, undefined, id, road[selectedLaneEnd === "a" ? "b" : "a"]));
+    render();
+    return;
+  }
   const approach = target?.closest("[data-approach]")?.dataset.approach;
   if (approach !== undefined) {
     freeApproach = Number(approach);
@@ -972,9 +1273,18 @@ function editFreeMap(target, point) {
     return;
   }
   if (roadMode === "draw") {
-    if (freeStart && id === freeStart) freeStart = undefined;
-    else if (!freeStart && id) freeStart = id;
-    else if (freeStart && (id || point)) drawNetworkRoad(snapPoint(point, networkNodes(network).get(freeStart), id, freeStart));
+    const start = drawStartPoint(network);
+    const sameLane = port && freeStart?.anchor && lanePortKey(port) === lanePortKey(freeStart);
+    if (start && (id === freeStart.id && !port || sameLane)) {
+      freeStart = undefined;
+      clearLaneFocus();
+    } else if (!start) {
+      freeStart = port ?? (id ? { id } : point && snapPoint(point));
+      if (port) clearLaneFocus();
+    } else if (!port && id && (freeStart.anchor || pickingEndLane) && !laneFocus &&
+        junctionLegs(network, id).some(leg => leg.outgoing && !leg.slip)) {
+      focusLanePorts(id);
+    } else if (port || id || point) drawNetworkRoad(port ?? snapPoint(point, start, id, freeStart.id));
   } else if (roadMode === "split") {
     if (roadIndex !== undefined) {
       const index = Number(roadIndex);
@@ -993,7 +1303,7 @@ function editFreeMap(target, point) {
       }
     } else if (!id && point && network.nodes.length < 60) {
       const position = snapPoint(point);
-    if (position.id) {
+      if (position.id) {
         freeNode = position.id;
         roadMode = "select";
         render();
@@ -1012,38 +1322,83 @@ function editFreeMap(target, point) {
     freeRoad = roadIndex === undefined ? undefined : Number(roadIndex);
     freeNode = id;
     freeApproach = undefined;
+    selectedLaneEnd = undefined;
+    clearLaneFocus();
     demandTerminal = terminals[id] ? id : undefined;
   }
   render();
 }
 
 function queueViewBox(frame) {
-  const queued = frame.markers.filter(car => car.reason && car.zone === frame.queueZone);
+  const queued = frame.markers.filter(car => inPeakQueue(car, frame));
   if (!queued.length) return comparisonViewBox;
   const xs = queued.map(car => car.x);
   const ys = queued.map(car => car.y);
-  const left = Math.min(150, ...xs) - 12;
-  const top = Math.min(130, ...ys) - 12;
-  return `${left} ${top} ${Math.max(480, ...xs) + 12 - left} ${Math.max(475, ...ys) + 12 - top}`;
+  const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const width = Math.max(180, Math.max(...xs) - Math.min(...xs) + 60);
+  const height = Math.max(155, Math.max(...ys) - Math.min(...ys) + 60);
+  return `${centerX - width / 2} ${centerY - height / 2} ${width} ${height}`;
+}
+
+const replaySurfaces = new WeakMap();
+
+const lampColor = color => ({ g: "#9ee6a2", y: "#ffca74", u: "#ffca74", r: "#ff987d" })[color.toLowerCase()] ?? "#89998e";
+
+function signalMarkup(signals) {
+  return (signals ?? []).map(signal => {
+    const phase = signal.switches.findLast(change => change.time <= time + 1e-8)?.state ?? "";
+    return signal.lanes.map(lane => {
+      const colors = [...new Set(lane.links.map(index => (phase[index] ?? "o").toLowerCase()))];
+      return `<g class="replay-signal" transform="translate(${lane.x} ${lane.y}) rotate(${lane.angle})">${colors.map((color, i) =>
+        `<circle cx="-2" cy="${(i - (colors.length - 1) / 2) * 2.9}" r="1.75" stroke="#263944" stroke-width=".7" fill="${lampColor(color)}"/>`).join("")}</g>`;
+    }).join("");
+  }).join("");
+}
+
+function paintReplay(surface, config, run, bounds) {
+  if (surface.getAttribute("viewBox") !== bounds) surface.setAttribute("viewBox", bounds);
+  let replay = replaySurfaces.get(surface);
+  if (replay?.config !== config || !replay.vehicles.isConnected) {
+    surface.innerHTML = mapMarkup(config, false) + '<g class="vehicle-layer" pointer-events="none"/><g class="signal-layer" pointer-events="none"/>';
+    replay = { config, vehicles: surface.querySelector(".vehicle-layer"), signalLayer: surface.querySelector(".signal-layer"),
+      signals: surface.querySelectorAll("[data-signal-approach]") };
+    replaySurfaces.set(surface, replay);
+  }
+  const frame = run?.frames[Math.floor(time / step + 1e-8)];
+  replay.vehicles.innerHTML = frame ? replayMarkers(run.frames, time).map(car => vehicleMarkup(car, frame)).join("") : "";
+  const signals = config.network ? signalMarkup(run?.signals) : "";
+  if (signals !== replay.signalMarkup) {
+    replay.signalLayer.innerHTML = signals;
+    replay.signalMarkup = signals;
+  }
+  for (const signal of replay.signals) {
+    const road = signal.dataset.signalApproach;
+    const phase = frame?.phase;
+    signal.setAttribute("fill", phase === road ? "#9ee6a2" : phase === road + "-yellow" ? "#ffca74" : "#ff987d");
+  }
 }
 
 function paintMap() {
   const editing = view === "design";
   const split = view === "simulate" && comparing && !!currentRun;
   map.toggleAttribute("hidden", split);
+  map.classList.toggle("simulation-map", !editing);
   $("#comparison").hidden = !split;
   if (split) {
     const editedFrame = currentRun.frames[Math.floor(time / step + 1e-8)];
-    const bounds = design.network ? "0 55 500 570" : highlightQueues ? queueViewBox(editedFrame) : comparisonViewBox;
-    $("#original-map").setAttribute("viewBox", bounds);
-    $("#design-map").setAttribute("viewBox", bounds);
-    $("#original-map").innerHTML = mapMarkup(baseline, original, false);
-    $("#design-map").innerHTML = mapMarkup(design, currentRun, false);
+    const bounds = highlightQueues && editedFrame.longestQueue > 0 ? queueViewBox(editedFrame) : design.network ? "0 55 500 570" : comparisonViewBox;
+    paintReplay($("#original-map"), baseline, original, bounds);
+    paintReplay($("#design-map"), design, currentRun, bounds);
+  } else if (!editing) {
+    const editedFrame = currentRun?.frames[Math.floor(time / step + 1e-8)];
+    const bounds = highlightQueues && editedFrame?.longestQueue > 0 ? queueViewBox(editedFrame) : design.network ? "0 55 500 570" : comparisonViewBox;
+    paintReplay(map, design, currentRun, bounds);
   } else {
     const junction = editing && tool === "junction" && draft.network?.nodes.find(node => node.id === freeNode);
     const focus = junction ? `${junction.x - 70} ${junction.y - 70} 140 140` : undefined;
     map.setAttribute("viewBox", editing && camera ? camera.join(" ") : focus ?? ((editing ? draft : design).network ? "0 62 500 560" : editing && tool === "road" ? "130 55 370 810" : editing && tool === "junction" ? "150 125 345 605" : editing && tool === "slip" ? "140 90 360 615" : editing && tool === "lanes" ? "145 145 340 476" : "0 0 500 700"));
-    map.innerHTML = mapMarkup(editing ? draft : design, editing ? undefined : currentRun, editing);
+    map.innerHTML = mapMarkup(draft, true);
   }
 }
 
@@ -1052,6 +1407,8 @@ const metric = value => Math.round(value);
 const clock = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
 function renderInspector() {
+  inspector.classList.toggle("report-panel", view === "results" && !!currentRun);
+  inspector.setAttribute("aria-label", { design: "Design controls", simulate: "Simulation controls", results: "Results" }[view]);
   if (view === "design") {
     const geometry = curve(draft, draft.lanes & 1 ? 1 : 2);
     const node = tool === "junction" ? junctions(draft).find(item => item.id === selectedJunction) : undefined;
@@ -1066,20 +1423,22 @@ function renderInspector() {
     if (draft.network) {
       const editingIntersection = tool === "junction";
       const intersection = draft.network.nodes.find(item => item.id === freeNode);
-      const destinations = demandTerminal ? destinationCounts(demandTerminal) : [];
-      const demand = demandTerminal ? `<div class="terminal-demand" role="status"><strong>From ${terminals[demandTerminal].name}</strong>
-        <p>${destinations.length ? destinations.map(([id, count]) => `${terminals[id].name} · ${count} trips`).join(" / ") : "Arrival only"}</p></div>` : "";
+      const demand = `<div id="terminal-demand">${demandTerminal ? demandDetails(demandTerminal) : ""}</div>`;
       const detail = editingIntersection ? (!intersection ? "Select a junction on the map." :
         junctionMode === "draw" ? "Connect a blue incoming lane to a purple outgoing lane." :
         junctionMode === "erase" ? "Tap an arrow to disallow that movement." : "Tap a movement to set its rule.") :
-        roadMode === "draw" ? "Drag between nodes or tap two endpoints." :
+        selectedLaneEnd ? "Choose a lane or a new position for this end." :
+        roadMode === "draw" ? laneFocus ? "Tap a lane, or hold and pull to curve into it." :
+          freeStart?.anchor || pickingEndLane ? "Tap the destination junction to choose a lane." :
+          freeStart ? "Tap the end for a straight road. Hold and pull to curve." : "Tap to start a road, or drag from a node." :
         roadMode === "split" ? "Tap the map or a road to add a node." :
         freeCurve ? "Drag either handle to shape the curve." :
-        freeNode && !terminals[freeNode] ? "Drag the selected node to move it." :
+        freeNode && !terminals[freeNode] ? "Drag this node to move its connected roads." :
         freeRoad !== undefined ? "Choose lanes or turn on curve handles." : "Select a segment or node.";
-      inspector.innerHTML = `${heading}<div class="editor-switch" aria-label="Network editors">
+      inspector.innerHTML = `<div class="row inspector-heading editor-heading"><h1 class="sr-only">${title}</h1>
+        <div class="editor-switch" aria-label="Network editors">
         <button data-tool="road" aria-pressed="${!editingIntersection}">Road Builder</button>
-        <button data-tool="junction" aria-pressed="${editingIntersection}">Intersections</button></div>
+        <button data-tool="junction" aria-pressed="${editingIntersection}">Intersections</button></div>${collapse}</div>
         <p id="detail">${roadMessage || detail}</p>${demand}${editingIntersection ? intersectionControls(intersection) : freeControls()}
         <div class="row actions"><button data-action="cancel" ${changed() ? "" : "disabled"}>Cancel</button>
         <button data-action="apply" ${changed() ? "" : "disabled"}>Apply</button><button class="primary" data-action="test">Test design</button></div>`;
@@ -1124,15 +1483,27 @@ function renderInspector() {
       <button class="primary" data-action="test">Test design</button></div>`;
     updateGeometryReadouts();
   } else if (!currentRun) {
-    inspector.innerHTML = `<h1>${view === "simulate" ? "Traffic simulation" : "School pickup results"}</h1>
-      <p role="status"></p>${sumoMessage ? '<div class="row actions"><button data-action="retry">Retry</button></div>' : ""}`;
-    inspector.querySelector("[role=status]").textContent = sumoMessage || "Simulating traffic…";
+    inspector.innerHTML = `<div class="pending-run"><h1>${view === "simulate" ? "Traffic simulation" : "School pickup results"}</h1>
+      <p role="status"></p></div>${sumoMessage ? '<div class="row actions"><button data-action="retry">Retry</button></div>' : ""}`;
+    inspector.querySelector("[role=status]").textContent = sumoMessage || "Running the original and your design…";
   } else if (view === "simulate") {
-    inspector.innerHTML = `<div class="row spread"><h1>Traffic simulation</h1><button data-action="compare" aria-pressed="${comparing}">Compare</button></div>
-      <div class="row"><button id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
-      <input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Simulation time">
-      <span id="clock">${clock(time)}</span></div>
-      <div class="row spread simulation-footer"><p id="live"></p><button data-action="peak">Worst backup</button></div>`;
+    const { peakFrame, longestQueue } = currentRun.results;
+    const peak = longestQueue ? `<span class="timeline-peak" style="--peak-time:${peakFrame * step / duration * 100}%" aria-hidden="true"></span>` : "";
+    const legend = [["car", "Car"], ["bus", "Bus"], ["pickup", "Pickup"], ["queue", "Queued"]].map(([key, label]) =>
+      `<span><i style="--vehicle-color:${vehicleColors[key]}"></i>${label}</span>`).join("");
+    inspector.innerHTML = `<div class="simulation-console">
+      <div class="row spread"><h1>Traffic simulation</h1><button data-action="compare" aria-pressed="${comparing}">Compare</button></div>
+      <div class="row playback">
+        <button class="primary" id="play" data-action="play">${playing ? "Pause" : "Play"}</button>
+        <button data-action="rate" title="Change playback speed">${playbackRate}×</button>
+        <label class="timeline">${peak}<input id="scrub" type="range" min="0" max="${duration}" step="${step}" value="${time}" aria-label="Simulation time"></label>
+        <span class="run-clock"><span id="clock">${clock(time)}</span><small>/ ${clock(duration)}</small></span>
+      </div>
+      <div class="row spread simulation-footer">
+        <div><p id="live"></p><div class="traffic-legend" aria-label="Vehicle legend">${legend}</div></div>
+        <button data-action="peak" ${longestQueue ? "" : "disabled"}>Worst backup</button>
+      </div>
+      <small class="engine-credit sr-only">Eclipse SUMO</small></div>`;
     updateSimulationReadout();
   } else {
     const a = original.results;
@@ -1144,28 +1515,44 @@ function renderInspector() {
       ["Pickup trips", a.pickupFinished, b.pickupFinished, "", -1],
       ["Cross-street trips", a.crossFinished, b.crossFinished, "", -1],
       ["All trips", a.finished, b.finished, "", -1],
-      ...(design.slipStart ? [["Slip lane trips", a.slipFinished, b.slipFinished, "", -1]] : []),
+      ...(design.slipStart || design.network?.roads.some(road => road.laneA || road.laneB) ?
+        [["Slip lane trips", a.slipFinished, b.slipFinished, "", -1]] : []),
       ...(b.unserved ? [["Trips with no route", a.unserved, b.unserved, "", 1]] : []),
       ["Collisions", a.collisions, b.collisions, "", 1]
     ];
     const goal = b.unserved === 0 && b.collisions === 0 && metric(b.longestQueue) < metric(a.longestQueue) &&
       metric(b.busDelay) <= metric(a.busDelay) && metric(b.crossDelay) <= metric(a.crossDelay) &&
       b.finished >= a.finished && b.pickupFinished >= a.pickupFinished && b.crossFinished >= a.crossFinished;
-    const summary = b.unserved ? "Some trips lost access. Check road connections and turn restrictions." : goal ? "Goal met. You shortened the peak queue and protected service on both roads."
-      : b.collisions ? "Revise the layout. SUMO reported a collision."
-        : "Goal: shorten the peak queue while protecting bus delay, cross-street delay, and completed trips.";
+    const queueDelta = metric(b.longestQueue) - metric(a.longestQueue);
+    const summary = b.unserved ? `${b.unserved} ${b.unserved === 1 ? "trip has" : "trips have"} no route. Check connections and turns.` :
+      b.collisions ? `SUMO recorded ${b.collisions} ${b.collisions === 1 ? "collision" : "collisions"}.` :
+      goal ? "Goal met. The queue fell and service held." :
+      queueDelta > 0 ? "The peak queue grew. Inspect the backup to see where it formed." :
+      queueDelta === 0 ? "The peak queue held steady." :
+      "The peak queue fell. Check the trip and delay results for trade-offs.";
+    const stat = (label, value, before, unit, lowerIsBetter) => {
+      const difference = metric(value) - metric(before);
+      const change = difference === 0 ? "Same as original" : `${Math.abs(difference)}${unit ? " " + unit : ""} ${difference > 0 ? "more" : "fewer"}`;
+      const tone = difference === 0 ? "" : (difference < 0) === lowerIsBetter ? "gain" : "loss";
+      return `<div class="report-stat"><span>${label}</span><strong>${metric(value)}${unit ? ` <small>${unit}</small>` : ""}</strong>
+        <small class="${tone}">${change}${difference === 0 ? "" : " than original"}</small></div>`;
+    };
     const cell = (label, before, after, unit, direction) => {
       const suffix = unit ? ` ${unit}` : "";
       const delta = metric(after) - metric(before);
       return `<tr><th scope="row">${label}</th><td>${metric(before)}${suffix}</td><td>${metric(after)}${suffix}</td>
         <td class="${delta === 0 ? "muted" : delta * direction < 0 ? "gain" : "loss"}">${delta > 0 ? "+" : delta < 0 ? "−" : ""}${Math.abs(delta)}${suffix}</td></tr>`;
     };
-    inspector.innerHTML = `<h1>School pickup results</h1><table class="metrics" aria-label="Simulation results by design">
+    inspector.innerHTML = `<div class="report-content" tabindex="0" role="region" aria-label="Simulation results">
+      <div class="report-heading"><h1>School pickup results</h1><p class="report-outcome ${goal ? "success" : ""}">${summary}</p></div>
+      <div class="report-key-metrics">${stat("Peak queue", b.longestQueue, a.longestQueue, "m", true)}
+        ${stat("Completed trips", b.finished, a.finished, "", false)}</div>
+      <table class="metrics" aria-label="Simulation results by design">
       <thead><tr><th scope="col">Measure</th><th scope="col">Original</th><th scope="col">Yours</th><th scope="col">Change</th></tr></thead>
-      <tbody>${rows.map(row => cell(...row)).join("")}</tbody></table><p>${summary}</p>
-      <div class="row actions"><button data-action="peak">See peak queue</button></div>`;
-
+      <tbody>${rows.map(row => cell(...row)).join("")}</tbody></table></div>
+      <div class="row actions"><button class="primary" data-action="peak" ${b.longestQueue ? "" : "disabled"}>See peak queue</button></div>`;
   }
+  if (view !== "design") $(".game").style.setProperty("--report-height", `${inspector.offsetHeight}px`);
 }
 
 function render() {
@@ -1179,19 +1566,31 @@ function render() {
   }
   paintMap();
   renderInspector();
-  if (view === "design" && draft.network) map.style.setProperty("--editor-height", `${inspector.offsetHeight}px`);
+  sizeEditorMap();
 }
 
+function sizeEditorMap() {
+  if (view !== "design" || !draft.network) return;
+  const height = inspector.offsetHeight - ($("#terminal-demand")?.offsetHeight ?? 0);
+  if (laneFocus && laneFocusHeight === undefined) laneFocusHeight = height;
+  map.style.setProperty("--editor-height", `${laneFocusHeight ?? height}px`);
+}
 
 function updateSimulationReadout() {
   const index = Math.floor(time / step + 1e-8);
   $("#clock").textContent = clock(time);
   $("#scrub").value = time;
-  const stats = frame => `${frame.finished} trips · ${metric(frame.longestQueue)} m queued`;
-  $("#original-stats").textContent = stats(original.frames[index]);
   const edited = currentRun.frames[index];
-  $("#design-stats").textContent = stats(edited);
-  $("#live").textContent = highlightQueues ? edited.queueZone || "No queue at this time" : comparing ? "Eclipse SUMO" : stats(edited);
+  for (const [name, run] of [["original", original], ["design", currentRun]]) {
+    const frame = run.frames[index];
+    const complete = $(`#${name}-stats`);
+    const trips = run.results.finished + run.results.waiting;
+    complete.textContent = `${frame.finished}/${trips} trips`;
+    $(`#${name}-queue`).textContent = `${metric(frame.longestQueue)} m queued`;
+    $(`[data-map-version="${name}"]`).style.setProperty("--trip-progress", `${frame.finished / Math.max(1, trips) * 100}%`);
+  }
+  $("#live").textContent = highlightQueues ? edited.queueZone ? `${edited.queueZone} · ${metric(edited.longestQueue)} m` : "No queue at this time" :
+    `${edited.markers.length} on road · ${metric(edited.longestQueue)} m queued`;
 }
 
 function toggleLane(bit) {
@@ -1239,7 +1638,8 @@ map.addEventListener("pointerdown", event => {
   if (view !== "design" || event.button !== 0) return;
   if (!mapPointers.size) suppressMapClick = false;
   mapPointers.set(event.pointerId, event);
-  if (mapPointers.size === 1 && event.target.closest("[role=button], [data-handle]")) return;
+  if (mapPointers.size === 1 && (event.target.closest("[role=button], [data-handle]") ||
+      draft.network && tool === "road" && roadMode === "draw")) return;
   if (mapPointers.size > 1) {
     if (movementDrag) {
       movementDrag = undefined;
@@ -1250,6 +1650,7 @@ map.addEventListener("pointerdown", event => {
       clearTimeout(terminalHold);
       if (freeDrag.moved) freeStart = freeDrag.previousStart;
       freeDrag = undefined;
+      drawCurveGuide = undefined;
       paintMap();
     }
     finishDrag(true);
@@ -1401,19 +1802,39 @@ function handleRoadTarget(target, y) {
 map.addEventListener("pointerdown", event => {
   const id = event.target.closest("[data-free-node]")?.dataset.freeNode;
   const handle = event.target.closest("[data-curve-handle]")?.dataset.curveHandle;
-  if (!draft.network || tool !== "road" || view !== "design" || (!id && handle === undefined) || event.button !== 0) return;
-  const kind = handle !== undefined ? "curve" : roadMode === "draw" ? "draw" :
-    roadMode === "select" && id === freeNode && !terminals[id] ? "move" : undefined;
+  const end = event.target.closest("[data-lane-end]")?.dataset.laneEnd;
+  const port = lanePortFromTarget(event.target);
+  if (!draft.network || tool !== "road" || view !== "design" || event.button !== 0) return;
+  const drawing = roadMode === "draw";
+  const kind = handle !== undefined ? "curve" : end ? "lane" : drawing ?
+    freeStart ? "draw-end" : id || port ? "draw" : "pan" :
+    roadMode === "select" && id && !terminals[id] && !selectedLaneEnd ? "move" : undefined;
   if (!kind && !terminals[id]) return;
-  freeDrag = { id, kind, handle: Number(handle), road: freeRoad, pointer: event.pointerId,
+  freeDrag = { id, kind, end, handle: Number(handle), road: freeRoad, pointer: event.pointerId,
     x: event.clientX, y: event.clientY, previousStart: freeStart };
-  if (terminals[id]) terminalHold = setTimeout(() => {
+  const gesture = freeDrag;
+  if (kind === "draw") gesture.origin = port ?? { id };
+  if (kind === "draw-end") {
+    const point = mapPoint(event);
+    gesture.down = point;
+    gesture.target = drawLaneTarget(port) ?? snapPoint(point, drawStartPoint(draft.network), id, freeStart.id);
+    terminalHold = setTimeout(() => {
+      if (freeDrag !== gesture) return;
+      freeDrag.kind = "curve-draw";
+      freeDrag.moved = true;
+      drawCurveGuide = { target: gesture.target, finger: point, delta: { x: 0, y: 0 } };
+      const layer = $("[data-road-preview]");
+      if (layer) layer.innerHTML = roadGestureMarkup(drawStartPoint(draft.network), gesture.target, undefined, drawCurveGuide);
+    }, roadCurveHold);
+  } else if (terminals[id]) terminalHold = setTimeout(() => {
     if (!freeDrag || freeDrag.pointer !== event.pointerId) return;
     freeDrag.held = true;
     demandTerminal = id;
     suppressMapClick = true;
+    suppressHeldTouchClickUntil = performance.now() + 700;
     $("[data-demand-layer]").innerHTML = demandMarkup();
-    renderInspector();
+    const details = $("#terminal-demand");
+    if (details) details.innerHTML = demandDetails(id);
   }, 450);
 });
 
@@ -1422,25 +1843,62 @@ function dragNetworkPoint(event, gesture) {
   if (gesture.kind === "curve") return point;
   const network = draft.network;
   const nodes = networkNodes(network);
-  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-free-node]")?.dataset.freeNode;
+  const hit = document.elementFromPoint(event.clientX, event.clientY);
+  const target = hit?.closest("[data-free-node]")?.dataset.freeNode;
+  const port = lanePortFromTarget(hit);
+  if (gesture.kind === "lane") {
+    const road = network.roads[gesture.road];
+    const exclude = road[gesture.end === "a" ? "b" : "a"];
+    return lanePortNear(point, gesture.end === "a" ? "incoming" : "outgoing", { all: true, end: gesture.end, exclude }) ??
+      snapPoint(point, undefined, target, exclude);
+  }
   const road = gesture.kind === "move" && network.roads.find(item => item.a === gesture.id || item.b === gesture.id);
-  const source = road ? nodes.get(road.a === gesture.id ? road.b : road.a) : nodes.get(gesture.id);
-  return snapPoint(point, source, gesture.kind === "draw" ? target : undefined, gesture.id);
+  const source = road ? nodes.get(road.a === gesture.id ? road.b : road.a) : drawStartPoint(network);
+  if (gesture.kind === "draw" || gesture.kind === "draw-end") {
+    return drawLaneTarget(port) ?? snapPoint(point, source, target, freeStart?.id);
+  }
+  return snapPoint(point, source, undefined, gesture.id);
 }
+
+const drawLaneTarget = port => port && port.id !== freeStart?.id ? port : undefined;
 
 map.addEventListener("pointermove", event => {
   if (freeDrag?.pointer !== event.pointerId || freeDrag.held ||
       Math.hypot(event.clientX - freeDrag.x, event.clientY - freeDrag.y) < 4) return;
   clearTimeout(terminalHold);
   if (!freeDrag.kind) return;
+  if (freeDrag.kind === "pan") {
+    freeDrag = undefined;
+    startCameraGesture();
+    suppressMapClick = true;
+    return;
+  }
   if (!map.hasPointerCapture(event.pointerId)) map.setPointerCapture(event.pointerId);
   if (!freeDrag.moved) {
-    if (freeDrag.kind === "draw") freeStart = freeDrag.id;
+    if (freeDrag.kind === "draw") freeStart = freeDrag.origin;
+    if (freeDrag.kind === "move") {
+      freeNode = freeDrag.id;
+      freeRoad = undefined;
+      freeCurve = false;
+    }
     freeDrag.moved = true;
     demandTerminal = undefined;
+    if (freeDrag.kind === "draw" || freeDrag.kind === "lane" || freeDrag.kind === "move") paintMap();
   }
-  freeDrag.point = dragNetworkPoint(event, freeDrag);
-  paintMap();
+  const start = drawStartPoint(draft.network);
+  if (freeDrag.kind === "curve-draw") {
+    const point = mapPoint(event);
+    drawCurveGuide = { target: freeDrag.target, finger: point, delta: { x: point.x - freeDrag.down.x, y: point.y - freeDrag.down.y } };
+  } else freeDrag.point = dragNetworkPoint(event, freeDrag);
+  if (freeDrag.kind === "curve") {
+    paintMap();
+    return;
+  }
+  const target = drawCurveGuide?.target ?? (freeDrag.kind === "draw" || freeDrag.kind === "draw-end" ? freeDrag.point : undefined);
+  const controls = drawCurveGuide && roadCurveFromPull(drawAnchorPoint(draft.network, freeStart),
+    drawAnchorPoint(draft.network, target), drawCurveGuide.delta);
+  const layer = $("[data-road-preview]");
+  if (layer) layer.innerHTML = roadGestureMarkup(start, target, controls, drawCurveGuide, freeDrag.point);
 });
 
 for (const type of ["pointerup", "pointercancel"]) {
@@ -1450,14 +1908,19 @@ for (const type of ["pointerup", "pointercancel"]) {
     const gesture = freeDrag;
     const { moved, previousStart, held, id, kind } = gesture;
     freeDrag = undefined;
-    if (held) return;
+    const guide = drawCurveGuide;
+    drawCurveGuide = undefined;
+    if (held) {
+      suppressHeldTouchClickUntil = performance.now() + 400;
+      return;
+    }
     if (!moved) return;
     suppressMapClick = true;
     const target = document.elementFromPoint(event.clientX, event.clientY);
-    if (type === "pointerup" && map.contains(target)) {
+    if (type === "pointerup" && (kind === "curve-draw" || map.contains(target))) {
       roadMessage = "";
-      const point = dragNetworkPoint(event, gesture);
-      if (kind === "draw") drawNetworkRoad(point);
+      const point = kind === "curve-draw" ? gesture.target : dragNetworkPoint(event, gesture);
+      if (kind === "draw" || kind === "draw-end" || kind === "curve-draw") drawNetworkRoad(point, guide?.delta);
       if (kind === "move") {
         const result = moveNetworkNode(draft.network, id, point, point.id, point.index === undefined ? undefined : point);
         roadMessage = result.issue ?? "";
@@ -1468,6 +1931,7 @@ for (const type of ["pointerup", "pointercancel"]) {
         }
       }
       if (kind === "curve") reshapeNetworkRoad(gesture.road, gesture.handle, point);
+      if (kind === "lane") shiftLaneEnd(gesture.end, point);
       render();
     } else {
       freeStart = previousStart;
@@ -1610,7 +2074,7 @@ function frame(timestamp) {
   if (!playing || view !== "simulate") return;
   const elapsed = previousFrame ? (timestamp - previousFrame) / 1000 : 0;
   previousFrame = timestamp;
-  time = Math.min(duration, time + elapsed * 6);
+  time = Math.min(duration, time + elapsed * playbackRate);
   paintMap();
   updateSimulationReadout();
   if (time < duration) animationId = requestAnimationFrame(frame);
@@ -1640,9 +2104,9 @@ document.addEventListener("click", event => {
   if (nextTool) {
     if (draft.network && tool !== nextTool) {
       if (nextTool === "junction") {
-        roadCamera = camera;
         const selected = freeNode;
         clearNetworkSelection();
+        roadCamera = camera;
         selectIntersection(selected);
       } else {
         clearNetworkSelection();
@@ -1665,6 +2129,7 @@ document.addEventListener("click", event => {
     enterView(nextView);
   } else if (action === "toggle-inspector") {
     inspectorCollapsed = !inspectorCollapsed;
+    laneFocusHeight = undefined;
     render();
     $(".inspector-toggle").focus();
   } else if (action === "new-builder") {
@@ -1688,8 +2153,38 @@ document.addEventListener("click", event => {
     inspector.querySelector(`[data-snap-option="${option}"]`)?.focus();
   } else if (action === "curve-handles") {
     freeCurve = !freeCurve;
+    selectedLaneEnd = undefined;
+    clearLaneFocus();
     render();
     inspector.querySelector('[data-action="curve-handles"]')?.focus();
+  } else if (action === "move-lane-a" || action === "move-lane-b") {
+    const end = action.at(-1);
+    selectedLaneEnd = selectedLaneEnd === end ? undefined : end;
+    if (selectedLaneEnd) focusLanePorts(draft.network.roads[freeRoad][end]);
+    else clearLaneFocus();
+    roadMessage = "";
+    render();
+  } else if (action === "start-lane-picker") {
+    const id = freeStart.id;
+    freeStart = undefined;
+    pickingEndLane = false;
+    focusLanePorts(id);
+    render();
+  } else if (action === "end-lane-picker") {
+    pickingEndLane = !pickingEndLane;
+    render();
+  } else if (action === "lane-overview") {
+    clearLaneFocus();
+    render();
+  } else if (action === "move-free-node") {
+    roadMessage = "Drag the highlighted node. Use snapping to place it precisely.";
+    render();
+    map.querySelector(`[data-free-node="${freeNode}"]`)?.focus();
+  } else if (action === "finish-lane") {
+    freeStart = undefined;
+    clearLaneFocus();
+    roadMessage = "";
+    render();
   } else if (action === "network-undo" || action === "network-redo") {
     const [from, to] = action === "network-undo" ? [networkUndo, networkRedo] : [networkRedo, networkUndo];
     if (!from.length) return;
@@ -1754,9 +2249,10 @@ document.addEventListener("click", event => {
       node.id === freeNode ? { ...node, control: button.dataset.control } : node) });
     render();
   } else if (action === "remove-free-road") {
-    const network = draft.network;
-    editNetwork({ ...network, roads: network.roads.filter((_, i) => i !== freeRoad) });
+    editNetwork(removeNetworkRoad(draft.network, freeRoad));
     freeRoad = undefined;
+    selectedLaneEnd = undefined;
+    clearLaneFocus();
     render();
   } else if (roadPreset) {
     const [north, south] = roadPreset.split(":").map(Number);
@@ -1827,6 +2323,10 @@ document.addEventListener("click", event => {
     comparing = true;
     render();
     $('[data-action="peak"]').focus();
+  } else if (action === "rate") {
+    const rates = [1, 3, 6, 12];
+    playbackRate = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
+    button.textContent = `${playbackRate}×`;
   } else if (action === "play") {
     playing = !playing;
     if (playing && time >= duration) time = 0;

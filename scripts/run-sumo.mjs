@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
+import { configureJunctions, netconvertArgs, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 
 const [input, output] = process.argv.slice(2);
 const request = JSON.parse(readFileSync(input, "utf8"));
@@ -13,11 +13,14 @@ function run(layout) {
   for (const [file, text] of Object.entries(sumoInputs(request, layout))) writeFileSync(join(cwd, file), text);
   command("netconvert", netconvertArgs);
   const network = join(cwd, "corridor.net.xml");
-  writeFileSync(network, configureJunctions(readFileSync(network, "utf8"), layout.design, request.signalCycle));
-  command("sumo", sumoArgs(request));
-  const [trace, trips, collisions] = ["trace.xml", "trips.xml", "collisions.xml"]
+  const compiled = configureJunctions(readFileSync(network, "utf8"), layout.design, request.signalCycle);
+  writeFileSync(network, compiled);
+  const signalRequest = signalOutputRequest(compiled);
+  if (signalRequest) writeFileSync(join(cwd, "signals.add.xml"), signalRequest);
+  command("sumo", sumoArgs(request, !!signalRequest));
+  const [trace, trips, collisions, signals] = ["trace.xml", "trips.xml", "collisions.xml", ...(signalRequest ? ["signals.xml"] : [])]
     .map(file => readFileSync(join(cwd, file), "utf8"));
-  return sumoResult(request, layout, trace, trips, collisions);
+  return sumoResult(request, layout, trace, trips, collisions, compiled, signals);
 }
 try {
   const version = command("sumo", ["--version"]).split("\n")[0];

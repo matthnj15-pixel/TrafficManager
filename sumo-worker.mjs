@@ -1,6 +1,6 @@
 import createNetconvert from "./sumo-wasm/netconvert.mjs";
 import createSumo from "./sumo-wasm/sumo.mjs";
-import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
+import { configureJunctions, netconvertArgs, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "./sumo-network.mjs";
 
 async function run(create, args, inputs, outputs) {
   const messages = [];
@@ -14,10 +14,13 @@ async function run(create, args, inputs, outputs) {
 async function simulate(request, layout) {
   const inputs = sumoInputs(request, layout);
   const [network] = await run(createNetconvert, netconvertArgs, inputs, ["corridor.net.xml"]);
-  const [trace, trips, collisions] = await run(createSumo, sumoArgs(request), {
-    "corridor.net.xml": configureJunctions(network, layout.design, request.signalCycle), "routes.xml": inputs["routes.xml"]
-  }, ["trace.xml", "trips.xml", "collisions.xml"]);
-  return sumoResult(request, layout, trace, trips, collisions);
+  const compiled = configureJunctions(network, layout.design, request.signalCycle);
+  const signalRequest = signalOutputRequest(compiled);
+  const [trace, trips, collisions, signals] = await run(createSumo, sumoArgs(request, !!signalRequest), {
+    "corridor.net.xml": compiled, "routes.xml": inputs["routes.xml"],
+    ...(signalRequest && { "signals.add.xml": signalRequest })
+  }, ["trace.xml", "trips.xml", "collisions.xml", ...(signalRequest ? ["signals.xml"] : [])]);
+  return sumoResult(request, layout, trace, trips, collisions, compiled, signals);
 }
 
 self.onmessage = async ({ data: request }) => {

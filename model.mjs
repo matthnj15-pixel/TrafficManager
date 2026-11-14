@@ -294,7 +294,7 @@ export function networkNodes(network) {
 
 export const movementKey = ({ from, to, fromLane, toLane }) => `${from}:${fromLane}>${to}:${toLane}`;
 
-export function junctionLegs(network, id) {
+export function junctionLegs(network, id, nodes = networkNodes(network)) {
   return network.roads.flatMap((road, index) => {
     const atA = road.a === id;
     if (!atA && road.b !== id) return [];
@@ -302,6 +302,10 @@ export function junctionLegs(network, id) {
       neighbor: atA ? road.b : road.a, road, index, atA,
       incoming: atA ? road.backward : road.forward,
       outgoing: atA ? road.forward : road.backward,
+      arrivalAnchor: atA ? undefined : road.laneB,
+      departureAnchor: atA ? road.laneA : undefined,
+      slip: !!(road.laneA || road.laneB),
+      bearing: roadEndBearing(road, nodes, atA),
       rule: (atA ? road.atA : road.atB) ?? "default"
     }];
   });
@@ -310,23 +314,106 @@ export function junctionLegs(network, id) {
 export function junctionMovements(network, node) {
   if (node.movements) return node.movements;
   const legs = junctionLegs(network, node.id);
-  return legs.flatMap(from => legs.filter(to => to !== from && to.outgoing).flatMap(to =>
-    Array.from({ length: from.incoming }, (_, fromLane) => ({
-      from: from.neighbor, to: to.neighbor, fromLane,
-      toLane: Math.min(to.outgoing - 1, fromLane + Math.max(0, to.outgoing - from.incoming)),
-      rule: from.rule
-    }))));
+  return legs.flatMap(from => {
+    if (!from.incoming) return [];
+    const through = throughLeg(legs, from, "outgoing");
+    const exitingLanes = new Set(legs.filter(leg => leg.departureAnchor?.neighbor === from.neighbor)
+      .map(leg => leg.departureAnchor.lane).filter(lane => through && lane < from.incoming - through.outgoing));
+    return legs.filter(to => to !== from && to.outgoing).flatMap(to =>
+      Array.from({ length: from.incoming }, (_, fromLane) => {
+        const move = {
+          from: from.neighbor, to: to.neighbor, fromLane,
+          toLane: from.arrivalAnchor?.lane ?? clamp(fromLane + (to === through ?
+            to.outgoing - from.incoming : Math.max(0, to.outgoing - from.incoming)), 0, to.outgoing - 1),
+          rule: from.rule
+        };
+        if ((exitingLanes.has(fromLane) && !to.departureAnchor) || !fitsLaneAnchors(move, from, to)) return undefined;
+        return move;
+      }).filter(Boolean));
+  });
+}
+
+function fitsLaneAnchors(move, from, to) {
+  return (!from.arrivalAnchor || from.arrivalAnchor.neighbor === move.to && from.arrivalAnchor.lane === move.toLane) &&
+    (!to.departureAnchor || to.departureAnchor.neighbor === move.from && to.departureAnchor.lane === move.fromLane);
+}
+
+function roadEndBearing(road, nodes, atA) {
+  const { start, end, a, b } = roadControlPoints(road, nodes);
+  const tip = atA ? start : end, handle = atA ? a : b;
+  return Math.atan2(handle.y - tip.y, handle.x - tip.x);
+}
+
+function throughLeg(legs, leg, direction) {
+  let best, alignment = -.72;
+  for (const candidate of legs) {
+    if (candidate === leg || !candidate[direction] || candidate.slip) continue;
+    const dot = Math.cos(candidate.bearing - leg.bearing);
+    if (dot < alignment) {
+      best = candidate;
+      alignment = dot;
+    }
+  }
+  return best;
+}
+
+export function excessJunctionLanes(legs, leg, direction) {
+  if (leg.slip) return 0;
+  const opposite = direction === "incoming" ? "outgoing" : "incoming";
+  const through = throughLeg(legs, leg, opposite);
+  return through ? Math.max(0, leg[direction] - through[opposite]) : 0;
+}
+
+function laneDropCount(legs) {
+  const through = legs.filter(leg => !leg.slip);
+  return through.length === 2 ? Math.max(...through.map(leg => excessJunctionLanes(through, leg, "incoming"))) : 0;
+}
+
+export function isLaneDrop(network, node) {
+  if (node.control !== "priority" || node.movements) return false;
+  const legs = junctionLegs(network, node.id);
+  return legs.length === 2 && laneDropCount(legs) === 1;
+}
+
+export function junctionLanePose(leg, nodes, direction, lane, setback = 0) {
+  const geometry = networkRoadGeometry(leg.road, nodes);
+  const distance = Math.min(setback * scale, geometry.length * .6);
+  const tip = pointOnCurve(geometry, leg.atA ? distance : geometry.length - distance);
+  const reverse = leg.atA === (direction === "incoming");
+  return roadLanePosition({ ...tip, angle: tip.angle + (reverse ? Math.PI : 0) }, leg[direction], lane);
 }
 
 function validMovement(movement, legs) {
   if (!movement || movement.from === movement.to || !["default", "priority", "stop", "yield"].includes(movement.rule)) return false;
   const from = legs.get(movement.from), to = legs.get(movement.to);
   return Number.isInteger(movement.fromLane) && movement.fromLane >= 0 && movement.fromLane < from?.incoming &&
-    Number.isInteger(movement.toLane) && movement.toLane >= 0 && movement.toLane < to?.outgoing;
+    Number.isInteger(movement.toLane) && movement.toLane >= 0 && movement.toLane < to?.outgoing &&
+    fitsLaneAnchors(movement, from, to);
+}
+
+function validLaneAnchor(anchor, road, atA, network) {
+  if (anchor === undefined) return true;
+  if (!anchor || road.forward !== 1 || road.backward !== 0 || !Number.isInteger(anchor.lane) || anchor.lane < 0) return false;
+  const host = network.roads.find(item => item !== road &&
+    (item.a === (atA ? road.a : road.b) && item.b === anchor.neighbor ||
+     item.b === (atA ? road.a : road.b) && item.a === anchor.neighbor));
+  if (!host || host.laneA || host.laneB) return false;
+  const from = atA ? anchor.neighbor : road.b;
+  return anchor.lane < (host.a === from ? host.forward : host.backward);
 }
 
 export function reconcileJunctionMovements(network) {
   let changed = false;
+  const released = [];
+  const roads = network.roads.map(road => {
+    const badStart = !validLaneAnchor(road.laneA, road, true, network);
+    const badEnd = !validLaneAnchor(road.laneB, road, false, network);
+    if (!badStart && !badEnd) return road;
+    changed = true;
+    if (badStart) released.push([road.a, road.laneA]);
+    return { ...road, ...(badStart ? { laneA: undefined } : {}), ...(badEnd ? { laneB: undefined } : {}) };
+  });
+  if (changed) network = released.reduce((next, [id, anchor]) => restoreReleasedLane(next, id, anchor), { ...network, roads });
   const nodes = network.nodes.map(node => {
     if (!node.movements) return node;
     const legs = new Map(junctionLegs(network, node.id).map(leg => [leg.neighbor, leg]));
@@ -338,7 +425,7 @@ export function reconcileJunctionMovements(network) {
   return changed ? { ...network, nodes } : network;
 }
 
-export function networkRoadGeometry(road, nodes) {
+function roadControlPoints(road, nodes) {
   const start = nodes.get(road.a), end = nodes.get(road.b);
   const dx = end.x - start.x, dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
@@ -346,8 +433,86 @@ export function networkRoadGeometry(road, nodes) {
   const base = road.controls ?? [start.x + dx / 3, start.y + dy / 3, end.x - dx / 3, end.y - dy / 3];
   const a = { x: base[0] + ox, y: base[1] + oy };
   const b = { x: base[2] + ox, y: base[3] + oy };
+  return { start, a, b, end };
+}
+
+export function networkRoadGeometry(road, nodes) {
+  const { start, a, b, end } = roadControlPoints(road, nodes);
   const geometry = cubic(start, a, b, end);
   return { ...geometry, speed: road.bend || road.controls ? geometry.speed : 12 };
+}
+
+export function roadLanePosition(pose, count, lane) {
+  const offset = (count - lane - .5) * networkLaneWidth;
+  return { ...pose, x: pose.x - Math.sin(pose.angle) * offset, y: pose.y + Math.cos(pose.angle) * offset };
+}
+
+export function laneDropTaper(network, road, nodes, forward) {
+  const id = forward ? road.b : road.a;
+  const node = nodes.get(id);
+  if (node.control !== "priority" || node.movements) return 0;
+  const legs = junctionLegs(network, id, nodes);
+  const leg = legs.find(item => item.road === road);
+  if (!leg || !laneDropCount(legs)) return 0;
+  const excess = excessJunctionLanes(legs, leg, "incoming");
+  return legs.some(item => item.departureAnchor?.neighbor === leg.neighbor && item.departureAnchor.lane < excess) ? 0 : excess;
+}
+
+export function networkLaneSamples(road, network, nodes, forward, lane, geometry = networkRoadGeometry(road, nodes)) {
+  const count = forward ? road.forward : road.backward;
+  const path = forward ? geometry.samples : [...geometry.samples].reverse().map(p => ({ ...p, angle: p.angle + Math.PI }));
+  const drops = count > 1 ? laneDropTaper(network, road, nodes, forward) : 0;
+  const reach = Math.min(geometry.length * .45, 30 * scale);
+  const points = path.filter((_, index) => index % 5 === 0).map(p => {
+    if (lane >= drops) return roadLanePosition(p, count, lane);
+    const remaining = forward ? geometry.length - p.length : p.length;
+    const t = 1 - clamp(remaining / reach, 0, 1);
+    const shift = .62 * (drops - lane) / drops;
+    return roadLanePosition(p, count, lane + shift * t * t * (3 - 2 * t));
+  });
+  if (!forward || !road.laneA && !road.laneB) return points;
+  for (const [atStart, anchor] of [[true, road.laneA], [false, road.laneB]]) {
+    if (!anchor) continue;
+    const end = atStart ? road.a : road.b;
+    const leg = junctionLegs(network, end, nodes).find(item => item.neighbor === anchor.neighbor);
+    if (!leg) continue;
+    const target = junctionLanePose(leg, nodes, atStart ? "incoming" : "outgoing", anchor.lane);
+    const current = points[atStart ? 0 : points.length - 1];
+    const dx = target.x - current.x, dy = target.y - current.y;
+    const reach = Math.min(geometry.length * .46, 26 * scale);
+    for (const p of points) {
+      const distance = atStart ? p.length : geometry.length - p.length;
+      const weight = 1 - clamp(distance / reach, 0, 1);
+      const smooth = weight * weight * (3 - 2 * weight);
+      p.x += dx * smooth;
+      p.y += dy * smooth;
+    }
+  }
+  return points;
+}
+
+export function networkMergeSamples(network, from, to, nodes, fromLane, toLane) {
+  const lane = (leg, forward, index) => networkLaneSamples(leg.road, network, nodes, forward, index);
+  const arrival = lane(from, !from.atA, fromLane);
+  const departure = lane(to, to.atA, toLane);
+  const start = arrival.at(-2), end = departure[1];
+  const length = Math.hypot(end.x - start.x, end.y - start.y) / 3;
+  const handle = (point, shift) => ({
+    x: point.x + Math.cos(point.angle) * shift, y: point.y + Math.sin(point.angle) * shift
+  });
+  return cubic(start, handle(start, length), handle(end, -length), end).samples.filter((_, i) => i % 20 === 0);
+}
+
+export function roadCurveFromPull(start, end, delta) {
+  const dx = end.x - start.x, dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 16) return undefined;
+  const nx = -dy / length, ny = dx / length;
+  const limit = Math.min(70, length * .45);
+  const bend = clamp(delta.x * nx + delta.y * ny, -limit, limit) * 4 / 3;
+  if (Math.abs(bend) < 3) return undefined;
+  return [start.x + dx / 3 + nx * bend, start.y + dy / 3 + ny * bend,
+    end.x - dx / 3 + nx * bend, end.y - dy / 3 + ny * bend];
 }
 
 function footprintAt(point, clearance) {
@@ -368,13 +533,21 @@ export function networkRoadIssue(network, road, ignore = -1) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
   if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return "Choose a point farther away.";
-  const { samples, speed } = networkRoadGeometry(road, nodes);
+  const geometry = networkRoadGeometry(road, nodes);
+  const { samples, speed } = geometry;
   if (!Number.isFinite(speed)) return "Keep the curve handles clear of their endpoints.";
   const clearance = Math.max(road.forward, road.backward) * networkLaneWidth + 2;
   for (const point of samples) {
     const obstacle = footprintAt(point, clearance);
     if (obstacle) return `This road would cross ${obstacle}.`;
     if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep roads inside the map.";
+  }
+  if (road.forward === 1 && road.backward === 0 && (road.laneA || road.laneB)) {
+    for (const point of networkLaneSamples(road, network, nodes, true, 0, geometry)) {
+      const obstacle = footprintAt(point, networkLaneWidth / 2 + 2);
+      if (obstacle) return `This lane would cross ${obstacle}.`;
+      if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep lanes inside the map.";
+    }
   }
   for (const [index, other] of network.roads.entries()) {
     if (index === ignore) continue;
@@ -442,20 +615,21 @@ function splitRoad(road, nodes, cuts) {
   let [p0, p1, p2, p3] = [geometry.start, geometry.a, geometry.b, geometry.end];
   let previous = { node: nodes.get(road.a), t: 0 };
   const parts = [];
-  const part = (a, b, c1, c2, atA, atB) => ({
+  const part = (a, b, c1, c2, first, last) => ({
     a: a.id, b: b.id, forward: road.forward, backward: road.backward, bend: 0,
     ...(road.controls || road.bend ? { controls: [c1.x, c1.y, c2.x, c2.y] } : {}),
-    ...(atA ? { atA } : {}), ...(atB ? { atB } : {})
+    ...(first && road.atA ? { atA: road.atA } : {}), ...(last && road.atB ? { atB: road.atB } : {}),
+    ...(first && road.laneA ? { laneA: road.laneA } : {}), ...(last && road.laneB ? { laneB: road.laneB } : {})
   });
   for (const cut of cuts.sort((a, b) => a.t - b.t)) {
     const t = (cut.t - previous.t) / (1 - previous.t);
     const a = mix(p0, p1, t), b = mix(p1, p2, t), c = mix(p2, p3, t);
     const d = mix(a, b, t), e = mix(b, c, t);
-    parts.push(part(previous.node, cut.node, a, d, previous.t === 0 && road.atA));
+    parts.push(part(previous.node, cut.node, a, d, previous.t === 0, false));
     [p0, p1, p2] = [cut.node, e, c];
     previous = cut;
   }
-  parts.push(part(previous.node, nodes.get(road.b), p1, p2, undefined, road.atB));
+  parts.push(part(previous.node, nodes.get(road.b), p1, p2, false, true));
   return parts;
 }
 
@@ -463,19 +637,29 @@ export function splitNetworkRoad(network, index, node, t) {
   const nodes = networkNodes(network);
   const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
   const roads = network.roads.flatMap((road, i) => i === index ? parts : road);
-  const nodesWithMoves = remapSplitMovements([...network.nodes, node], network.roads[index], parts);
-  return checkNetworkEdit({ nodes: nodesWithMoves, roads }, network.roads);
+  return checkNetworkEdit(remapSplitReferences({ nodes: [...network.nodes, node], roads }, network.roads[index], parts), network.roads);
 }
 
-function remapSplitMovements(nodes, road, parts) {
-  if (parts.length === 1) return nodes;
-  return nodes.map(node => {
-    if (!node.movements || node.id !== road.a && node.id !== road.b) return node;
-    const [before, after] = node.id === road.a ? [road.b, parts[0].b] : [road.a, parts.at(-1).a];
+function remapJunctionNeighbor(network, id, before, after) {
+  if (before === after) return network;
+  const nodes = network.nodes.map(node => {
+    if (!node.movements || node.id !== id) return node;
     return { ...node, movements: node.movements.map(move => ({
       ...move, from: move.from === before ? after : move.from, to: move.to === before ? after : move.to
     })) };
   });
+  const roads = network.roads.map(road => {
+    if (road.a === id && road.laneA?.neighbor === before) return { ...road, laneA: { ...road.laneA, neighbor: after } };
+    if (road.b === id && road.laneB?.neighbor === before) return { ...road, laneB: { ...road.laneB, neighbor: after } };
+    return road;
+  });
+  return { ...network, nodes, roads };
+}
+
+function remapSplitReferences(network, road, parts) {
+  if (parts.length === 1) return network;
+  const next = remapJunctionNeighbor(network, road.a, road.b, parts[0].b);
+  return remapJunctionNeighbor(next, road.b, road.a, parts.at(-1).a);
 }
 
 export function moveNetworkNode(network, id, point, targetId, roadTarget) {
@@ -486,6 +670,14 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
   const issue = targetId ? undefined : networkNodeIssue(target);
   if (issue) return { issue };
   const attached = network.roads.filter(road => road.a === id || road.b === id);
+  const movedAnchorIds = road => {
+    if (!targetId) return road;
+    return {
+      ...road,
+      ...(road.laneA?.neighbor === id ? { laneA: { ...road.laneA, neighbor: targetId } } : {}),
+      ...(road.laneB?.neighbor === id ? { laneB: { ...road.laneB, neighbor: targetId } } : {})
+    };
+  };
   let next = {
     nodes: network.nodes.flatMap(item => item.id !== id ? [item] : targetId ? [] : [{ ...node, x: target.x, y: target.y }]),
     roads: network.roads.filter(road => !attached.includes(road))
@@ -494,20 +686,16 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
     const road = network.roads[roadTarget.index];
     const parts = splitRoad(road, networkNodes(network), [{ node: { ...node, ...point }, t: roadTarget.t }]);
     next.roads = next.roads.flatMap(item => item === road ? parts : item);
-    next.nodes = remapSplitMovements(next.nodes, road, parts);
+    next = remapSplitReferences(next, road, parts);
     const result = checkNetworkEdit(next, network.roads);
     if (result.issue) return result;
   }
   for (const road of attached) {
     const atStart = road.a === id;
-    const moved = { ...road, [atStart ? "a" : "b"]: targetId ?? id };
+    const moved = { ...movedAnchorIds(road), [atStart ? "a" : "b"]: targetId ?? id };
     if (targetId) {
       const other = atStart ? road.b : road.a;
-      next.nodes = next.nodes.map(item => item.id !== other || !item.movements ? item : {
-        ...item, movements: item.movements.map(move => ({
-          ...move, from: move.from === id ? targetId : move.from, to: move.to === id ? targetId : move.to
-        }))
-      });
+      next = remapJunctionNeighbor(next, other, id, targetId);
     }
     if (road.controls) {
       moved.controls = [...road.controls];
@@ -532,10 +720,107 @@ function checkNetworkEdit(network, previousRoads) {
   return { network };
 }
 
+export function moveRoadLaneAnchor(network, index, end, target) {
+  const road = network.roads[index];
+  const atA = end === "a", key = atA ? "laneA" : "laneB";
+  if (!road || road.forward !== 1 || road.backward !== 0) return { issue: "Use a one-way lane to attach a slip road." };
+  const anchor = target.anchor;
+  const id = target.id;
+  if (id === road[end] && anchor?.neighbor === road[key]?.neighbor && anchor?.lane === road[key]?.lane) return { network, road };
+  let next = network;
+  const nodes = networkNodes(network);
+  let destination = id;
+  if (!destination) {
+    const issue = networkNodeIssue(target);
+    if (issue) return { issue };
+    const node = nextNetworkNode(next, target);
+    if (target.index !== undefined) {
+      if (target.index === index) return { issue: "Connect to another road." };
+      const result = splitNetworkRoad(next, target.index, node, target.t);
+      if (!result.network) return result;
+      next = result.network;
+    } else next = { ...next, nodes: [...next.nodes, node] };
+    destination = node.id;
+  }
+  const moved = { ...road, [end]: destination, [key]: anchor };
+  if (anchor && !validLaneAnchor(anchor, moved, atA, next)) return { issue: "Choose a lane flowing in the right direction." };
+  if (road.controls) {
+    const previous = nodes.get(road[end]), point = networkNodes(next).get(destination);
+    moved.controls = [...road.controls];
+    const offset = atA ? 0 : 2;
+    moved.controls[offset] += point.x - previous.x;
+    moved.controls[offset + 1] += point.y - previous.y;
+  }
+  const replace = next.roads.findIndex(item => item.a === road.a && item.b === road.b);
+  const result = connectNetworkRoad(next, moved, replace);
+  if (!result.network) return result;
+  if (destination !== road[end] && result.network.roads.some(item => item.a === moved.a && item.b === moved.b)) {
+    const other = atA ? road.b : road.a;
+    result.network = remapJunctionNeighbor(result.network, other, road[end], destination);
+    if (road.laneA && atA) result.network = restoreReleasedLane(result.network, road.a, road.laneA);
+  }
+  const oldNode = destination !== road[end] && result.network.nodes.find(node => node.id === road[end]);
+  if (oldNode && !result.network.roads.some(item => item.a === oldNode.id || item.b === oldNode.id)) {
+    result.network = { ...result.network, nodes: result.network.nodes.filter(node => node !== oldNode) };
+  }
+  return { ...result, network: refreshLaneConnections(result.network, moved, road), road: moved };
+}
+
+function restoreReleasedLane(network, id, anchor) {
+  const node = network.nodes.find(item => item.id === id);
+  if (!node?.movements || !anchor) return network;
+  const legs = junctionLegs(network, id);
+  const host = legs.find(leg => leg.neighbor === anchor.neighbor);
+  if (!host || anchor.lane >= excessJunctionLanes(legs, host, "incoming")) return network;
+  const through = throughLeg(legs, host, "outgoing");
+  const move = junctionMovements(network, { ...node, movements: undefined })
+    .find(item => item.from === anchor.neighbor && item.fromLane === anchor.lane && item.to === through.neighbor);
+  if (!move || node.movements.some(item => movementKey(item) === movementKey(move))) return network;
+  const movements = [...node.movements, move];
+  return { ...network, nodes: network.nodes.map(item => item === node ? { ...item, movements } : item) };
+}
+
+export function removeNetworkRoad(network, index) {
+  const road = network.roads[index];
+  const next = { ...network, roads: network.roads.filter((_, i) => i !== index) };
+  return road?.laneA ? restoreReleasedLane(next, road.a, road.laneA) : next;
+}
+
+export function refreshLaneConnections(network, road, previous) {
+  let next = network;
+  for (const [end, other, anchor] of [["a", "b", "laneA"], ["b", "a", "laneB"]]) {
+    if (!road[anchor] && !previous?.[anchor]) continue;
+    const id = road[end];
+    const node = next.nodes.find(item => item.id === id);
+    if (!node?.movements || !network.roads.some(item => item.a === road.a && item.b === road.b)) continue;
+    const field = end === "a" ? "to" : "from";
+    const defaults = junctionMovements(next, { ...node, movements: undefined });
+    const added = defaults.filter(move => move[field] === road[other]);
+    const host = road[anchor];
+    const legs = junctionLegs(next, id);
+    const leg = legs.find(item => item.neighbor === host?.neighbor);
+    const drop = end === "a" && leg && host.lane < excessJunctionLanes(legs, leg, "incoming");
+    const released = end === "a" && previous?.laneA && previous.a === id &&
+      (previous.laneA.neighbor !== host?.neighbor || previous.laneA.lane !== host?.lane) ? previous.laneA : undefined;
+    const existing = new Map(node.movements.map(move => [movementKey(move), move]));
+    const kept = node.movements.filter(move => move[field] !== road[other] &&
+      !(drop && move.from === host.neighbor && move.fromLane === host.lane));
+    const movements = [...new Map([...kept, ...added.map(move => existing.get(movementKey(move)) ?? move)]
+      .map(move => [movementKey(move), move])).values()];
+    next = { ...next, nodes: next.nodes.map(item => item === node ? { ...item, movements } : item) };
+    if (released) next = restoreReleasedLane(next, id, released);
+  }
+  return reconcileJunctionMovements(next);
+}
+
 export function connectNetworkRoad(network, road, replace = -1) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
   if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return { issue: "Choose a point farther away." };
+  if (network.roads.some((other, index) => index !== replace &&
+      (road.a === other.a && road.b === other.b || road.a === other.b && road.b === other.a))) {
+    return { issue: "These nodes already share a road." };
+  }
   const addedNodes = [...network.nodes];
   const cuts = [], otherCuts = new Map();
   const endpoint = (item, t) => t < 1e-6 ? nodes.get(item.a) : t > 1 - 1e-6 ? nodes.get(item.b) : undefined;
@@ -554,15 +839,16 @@ export function connectNetworkRoad(network, road, replace = -1) {
       }
     }
   }
-  let updatedNodes = addedNodes;
+  const splits = [];
   const split = (item, hits) => {
     const parts = splitRoad(item, nodes, hits);
-    updatedNodes = remapSplitMovements(updatedNodes, item, parts);
+    if (parts.length > 1) splits.push([item, parts]);
     return parts;
   };
   const roads = network.roads.flatMap((other, i) => i === replace ? split(road, cuts) : split(other, otherCuts.get(i) ?? []));
   if (replace < 0) roads.push(...split(road, cuts));
-  return checkNetworkEdit({ nodes: updatedNodes, roads }, network.roads);
+  const next = splits.reduce((graph, [item, parts]) => remapSplitReferences(graph, item, parts), { nodes: addedNodes, roads });
+  return checkNetworkEdit(next, network.roads);
 }
 
 function validNetwork(network) {
@@ -579,6 +865,7 @@ function validNetwork(network) {
     road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
     (road.controls === undefined || Array.isArray(road.controls) && road.controls.length === 4 && road.controls.every(Number.isFinite)) &&
     [road.atA, road.atB].every(rule => rule === undefined || ["default", "priority", "yield", "stop"].includes(rule)) &&
+    validLaneAnchor(road.laneA, road, true, network) && validLaneAnchor(road.laneB, road, false, network) &&
     !networkRoadIssue(network, road, index));
   return validRoads && network.nodes.every(node => {
     if (node.movements === undefined) return true;

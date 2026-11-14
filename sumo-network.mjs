@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, junctionMovements, movementKey, networkLaneWidth, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -298,9 +298,10 @@ function freeNetworkInputs(request, network) {
   const edges = [], connections = [];
   const transitions = new Map();
   const explicitJunctions = new Set();
+  const laneDrops = new Set(network.nodes.filter(node => isLaneDrop(network, node)).map(node => node.id));
   const usesApproachRules = node => node.control !== "traffic_light" && node.control !== "allway_stop";
   const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
-  const addEdge = (id, from, to, points, count, speed, length, rule = "default") => {
+  const addEdge = (id, from, to, points, count, speed, length, rule = "default", laneShapes) => {
     if (!count) return;
     const control = usesApproachRules(nodes.get(to)) ? rule : "default";
     const priority = { default: 2, priority: 3, yield: 1, stop: 1 }[control];
@@ -310,8 +311,10 @@ function freeNetworkInputs(request, network) {
     if (!incoming.has(to)) incoming.set(to, []);
     outgoing.get(from).push(edge);
     incoming.get(to).push(edge);
-    edges.push(element("edge", { id, from, to, shape: shape(points), speed, priority, numLanes: count,
-      width: networkLaneWidth * request.scale, spreadType: "right" }));
+    const edgeXml = element("edge", { id, from, to, shape: shape(points), speed, priority, numLanes: count,
+      width: networkLaneWidth * request.scale, spreadType: "right" });
+    edges.push(laneShapes ? edgeXml.slice(0, -2) + ">" +
+      laneShapes.map((path, index) => element("lane", { index, shape: shape(path) })).join("") + "</edge>" : edgeXml);
   };
   for (const terminal of Object.values(terminals)) {
     const { id, x, y, dx, dy } = terminal;
@@ -321,15 +324,19 @@ function freeNetworkInputs(request, network) {
     addEdge(`${id}-out`, id, boundary.id, [terminal, boundary], 1, 9, Math.hypot(dx, dy));
   }
   for (const [index, road] of network.roads.entries()) {
-    const { samples, speed, length } = networkRoadGeometry(road, nodes);
+    const geometry = networkRoadGeometry(road, nodes);
+    const { samples, speed, length } = geometry;
     const points = samples.filter((_, i) => i % 5 === 0);
-    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB);
-    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA);
+    const laneShapes = (forward, count) => count && (forward && (road.laneA || road.laneB) || laneDropTaper(network, road, nodes, forward)) ?
+      Array.from({ length: count }, (_, lane) => networkLaneSamples(road, network, nodes, forward, lane, geometry)) : undefined;
+    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward));
+    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA, laneShapes(false, road.backward));
   }
   for (const [id, arrivals] of incoming) {
     const node = nodes.get(id);
-    const moves = node.movements && junctionMovements(network, node);
-    if (moves?.some(move => move.rule !== "default") && usesApproachRules(node)) explicitJunctions.add(id);
+    const moves = node.control && junctionMovements(network, node);
+    const legs = laneDrops.has(id) ? new Map(junctionLegs(network, id, nodes).map(leg => [leg.neighbor, leg])) : undefined;
+    if (node.movements?.some(move => move.rule !== "default") && usesApproachRules(node)) explicitJunctions.add(id);
     for (const from of arrivals) {
       if (id.endsWith("-boundary")) continue;
       const exits = [];
@@ -341,8 +348,11 @@ function freeNetworkInputs(request, network) {
           }));
         if (links.length) exits.push(to);
         for (const { fromLane, toLane } of links) {
+          const fromLeg = legs?.get(from.from), toLeg = legs?.get(to.to);
+          const taper = fromLeg && toLeg && fromLane < laneDropTaper(network, fromLeg.road, nodes, !fromLeg.atA) ?
+            shape(networkMergeSamples(network, fromLeg, toLeg, nodes, fromLane, toLane)) : undefined;
           connections.push(element("connection", {
-            from: from.id, to: to.id, fromLane, toLane
+            from: from.id, to: to.id, fromLane, toLane, ...(taper ? { shape: taper } : {})
           }));
         }
       }
@@ -388,7 +398,8 @@ function freeNetworkInputs(request, network) {
   }
   return {
     "nodes.xml": wrap("nodes", [...nodes.values()].map(node => element("node", {
-      id: node.id, x: node.x * request.scale, y: -node.y * request.scale, type: explicitJunctions.has(node.id) ? "priority" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
+      id: node.id, x: node.x * request.scale, y: -node.y * request.scale,
+      type: explicitJunctions.has(node.id) ? "priority" : laneDrops.has(node.id) ? "zipper" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
       ...(explicitJunctions.has(node.id) ? { rightOfWay: "edgePriority" } : {})
     }))),
     "edges.xml": wrap("edges", edges),
@@ -475,20 +486,38 @@ function configureSignal(network, green, cycle) {
   return network.replace(pattern, program);
 }
 
-export function sumoArgs({ duration, step }) {
+export function signalOutputRequest(network) {
+  return /<tlLogic\s/.test(network)
+    ? '<additional><timedEvent type="SaveTLSSwitchStates" dest="signals.xml"/></additional>'
+    : undefined;
+}
+
+export function sumoArgs({ duration, step }, traceSignals = false) {
   return [
     "--net-file", "corridor.net.xml", "--route-files", "routes.xml", "--seed", "42",
     "--step-length", String(step), "--end", String(duration + step), "--fcd-output", "trace.xml",
     "--precision", "4", "--tripinfo-output", "trips.xml", "--tripinfo-output.write-unfinished",
     "--collision-output", "collisions.xml", "--collision.action", "warn", "--collision.check-junctions",
-    "--collision.mingap-factor", "0", "--time-to-teleport", "-1", "--no-step-log", "--xml-validation", "never"
+    "--collision.mingap-factor", "0", "--time-to-teleport", "-1", "--no-step-log", "--xml-validation", "never",
+    ...(traceSignals ? ["--additional-files", "signals.add.xml"] : [])
   ];
 }
 
 // These are controlled SUMO XML outputs. Read only the numeric attributes
 // and identifiers needed by the comparison, including inside a worker.
-function queueZoneFor(lane) {
-  if (/^road-\d+-[fb]_/.test(lane)) return "Rebuilt network";
+function queueZoneFor(lane, network) {
+  const segment = /^road-(\d+)-([fb])_/.exec(lane);
+  if (segment && network) {
+    const road = network.roads[Number(segment[1])];
+    if (!road) return "Road junction";
+    const [from, to] = segment[2] === "f" ? [road.a, road.b] : [road.b, road.a];
+    const label = id => terminals[id]?.name ?? `Junction ${id.slice(1)}`;
+    return `${road.laneA || road.laneB ? "Slip lane · " : ""}${label(from)} → ${label(to)}`;
+  }
+  const junction = /^:(j\d+)_/.exec(lane);
+  if (junction) return `Junction ${junction[1].slice(1)}`;
+  const boundary = /^(\w+)-(?:in|out)_/.exec(lane);
+  if (network && terminals[boundary?.[1]]) return `${terminals[boundary[1]].name} connection`;
   if (lane.startsWith("road-")) return "Alder Avenue";
   return queueZones[lane.replace(/_\d+$/, "")] ?? "Junction";
 }
@@ -497,7 +526,40 @@ function attributes(tag) {
   return Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, key, value]) => [key, value]));
 }
 
-export function sumoResult(request, layout, trace, trips, collisions) {
+function signalReplay(network, output, scale) {
+  if (!network || !output) return [];
+  const signals = new Map();
+  for (const [tag] of output.matchAll(/<tlsState\s[^>]*>/g)) {
+    const { id, time, state } = attributes(tag);
+    if (!signals.has(id)) signals.set(id, { lanes: new Map(), switches: [] });
+    signals.get(id).switches.push({ time: Number(time), state });
+  }
+  const laneIndex = new Map();
+  for (const [tag] of network.matchAll(/<lane\s[^>]*>/g)) {
+    const { id, shape } = attributes(tag);
+    if (!id || !shape || id.startsWith(":")) continue;
+    const [before, end] = shape.trim().split(/\s+/).slice(-2).map(pair => pair.split(",").map(Number));
+    if (before && end) laneIndex.set(id, {
+      x: end[0] / scale, y: -end[1] / scale,
+      angle: Math.atan2(before[1] - end[1], end[0] - before[0]) * 180 / Math.PI
+    });
+  }
+  for (const [tag] of network.matchAll(/<connection\s[^>]*>/g)) {
+    const { from, fromLane, tl, linkIndex } = attributes(tag);
+    const signal = signals.get(tl);
+    const id = `${from}_${fromLane}`;
+    const position = laneIndex.get(id);
+    if (!signal || !position || linkIndex === undefined) continue;
+    if (!signal.lanes.has(id)) signal.lanes.set(id, { ...position, links: new Set() });
+    signal.lanes.get(id).links.add(Number(linkIndex));
+  }
+  return [...signals.values()].filter(signal => signal.lanes.size).map(({ lanes, switches }) => ({
+    lanes: [...lanes.values()].map(lane => ({ ...lane, links: [...lane.links].sort((a, b) => a - b) })),
+    switches
+  }));
+}
+
+export function sumoResult(request, layout, trace, trips, collisions, network, signalOutput) {
   const reports = [...trips.matchAll(/<tripinfo\s[^>]*>/g)].map(([tag]) => attributes(tag));
   const arrivals = reports.map(trip => Number(trip.arrival)).filter(time => time >= 0).sort((a, b) => a - b);
   const demand = new Map(request.trips.map(trip => [String(trip.id), trip]));
@@ -507,9 +569,20 @@ export function sumoResult(request, layout, trace, trips, collisions) {
   const busDelay = averageDelay(trip => trip.kind === "bus");
   const crossDelay = averageDelay(trip => trip.origin === "cross");
   const finishedFrom = origin => reports.filter(report => Number(report.arrival) >= 0 && demand.get(report.id).origin === origin).length;
+  const slipEdges = new Set(["slip-road"]);
+  layout.design.network?.roads.forEach((road, index) => {
+    if (!road.laneA && !road.laneB) return;
+    if (road.forward) slipEdges.add(`road-${index}-f`);
+    if (road.backward) slipEdges.add(`road-${index}-b`);
+  });
   const slipTrips = new Set();
   let finished = 0, longestQueue = 0, peakFrame = 0;
   const frames = [];
+  const queueZonesByLane = new Map();
+  const zoneForLane = lane => {
+    if (!queueZonesByLane.has(lane)) queueZonesByLane.set(lane, queueZoneFor(lane, layout.design.network));
+    return queueZonesByLane.get(lane);
+  };
   for (const [, timeText, vehicles] of trace.matchAll(/<timestep time="([\d.]+)"\s*(?:\/>|>([\s\S]*?)<\/timestep>)/g)) {
     const time = Number(timeText);
     while (finished < arrivals.length && arrivals[finished] <= time) finished++;
@@ -521,27 +594,28 @@ export function sumoResult(request, layout, trace, trips, collisions) {
       const angle = (Number(car.angle) - 90) * Math.PI / 180;
       const speed = Number(car.speed);
       const reason = speed < 2.2 ? "Queued" : "";
-      if (car.lane === "slip-road_0") slipTrips.add(Number(car.id));
-      const zone = queueZoneFor(car.lane);
+      if (slipEdges.has(car.lane.slice(0, car.lane.lastIndexOf("_")))) slipTrips.add(Number(car.id));
+      const zone = zoneForLane(car.lane);
       if (reason) queues.set(car.lane, (queues.get(car.lane) ?? 0) + length + 2);
-      markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, angle: +angle.toFixed(5),
+      markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, lane: car.lane, angle: +angle.toFixed(5),
         x: +((Number(car.x) - Math.cos(angle) * length / 2) / request.scale).toFixed(4),
         y: +((-Number(car.y) - Math.sin(angle) * length / 2) / request.scale).toFixed(4) });
     }
-    let queueZone = "", queue = 0;
+    let queueLane = "", queue = 0;
     for (const [lane, length] of queues) {
       if (length <= queue) continue;
       queue = length;
-      queueZone = queueZoneFor(lane);
+      queueLane = lane;
     }
     if (queue > longestQueue) {
       longestQueue = queue;
       peakFrame = frames.length;
     }
-    frames.push({ markers, phase: signalPhase(time, layout.design.green, request.signalCycle), finished, longestQueue, queueZone });
+    frames.push({ markers, phase: signalPhase(time, layout.design.green, request.signalCycle), finished, longestQueue, queueLane,
+      queueZone: queueLane ? zoneForLane(queueLane) : "" });
   }
   if (frames.length !== Math.round(request.duration / request.step) + 1) throw new Error("SUMO returned an incomplete simulation.");
-  return { design: layout.design, frames, results: { finished, waiting: request.trips.length - finished,
+  return { design: layout.design, frames, signals: signalReplay(network, signalOutput, request.scale), results: { finished, waiting: request.trips.length - finished,
     longestQueue, peakFrame, busDelay, crossDelay,
     slipFinished: reports.filter(report => Number(report.arrival) >= 0 && slipTrips.has(Number(report.id))).length,
     unserved: request.trips.length - [...sumoInputs(request, layout)["routes.xml"].matchAll(/<vehicle /g)].length, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"), collisions: [...collisions.matchAll(/<collision\s/g)].length } };

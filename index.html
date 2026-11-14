@@ -14,18 +14,23 @@
 <main class="game">
   <svg id="map" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid meet" aria-label="School pickup road map"></svg>
   <section id="comparison" class="comparison" aria-label="Simulation comparison" hidden>
-    <figure class="comparison-panel">
-      <figcaption><strong>Original</strong><output id="original-stats"></output></figcaption>
+    <figure class="comparison-panel" data-map-version="original">
+      <figcaption><strong>Original</strong><div class="map-stats"><output id="original-stats"></output><output id="original-queue"></output></div></figcaption>
       <svg id="original-map" viewBox="218 135 256 332" aria-label="Original simulation map"></svg>
     </figure>
-    <figure class="comparison-panel">
-      <figcaption><strong>Your design</strong><output id="design-stats"></output></figcaption>
+    <figure class="comparison-panel" data-map-version="design">
+      <figcaption><strong>Your design</strong><div class="map-stats"><output id="design-stats"></output><output id="design-queue"></output></div></figcaption>
       <svg id="design-map" viewBox="218 135 256 332" aria-label="Your design simulation map"></svg>
     </figure>
   </section>
   <header>
-    <div class="glass title"><span class="scenario">School pickup</span><span id="subtitle">Make room for pickup traffic.</span></div>
-    <button id="menu" class="glass round" aria-label="Menu" aria-expanded="false">•••</button>
+    <div class="glass title">
+      <svg class="scenario-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 26V6m20 0v20M16 7v3m0 5v3m0 5v3"/><path d="M5 26c6-1 12-4 12-10V7m-4 4 4-4 4 4"/></svg>
+      <div><span class="scenario">School pickup</span><span id="subtitle">Make room for pickup traffic.</span></div>
+    </div>
+    <button id="menu" class="glass round" aria-label="Menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>
+    </button>
   </header>
   <div id="menu-panel" class="glass menu-panel" hidden>
     <span id="offline">Preparing offline play…</span>

@@ -1,6 +1,52 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baseline, connectNetworkRoad, curve, junctionMovements, mergeTaper, moveNetworkNode, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
+import { baseline, connectNetworkRoad, curve, isLaneDrop, junctionMovements, mergeTaper, moveNetworkNode, moveRoadLaneAnchor, networkLaneSamples, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, removeNetworkRoad, roadCurveFromPull, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
+
+test("an extra lane tapers by default and can branch to a specific receiving lane", () => {
+  let network = starterNetwork();
+  const split = (index, x, y, t) => {
+    const result = splitNetworkRoad(network, index, nextNetworkNode(network, { x, y }), t);
+    assert.ok(result.network, result.issue);
+    network = result.network;
+  };
+  split(3, 270, 250, 70 / 147);
+  split(2, 338, 180, 68 / 200);
+  network.roads[5] = { ...network.roads[5], backward: 2 };
+  network.roads[3] = { ...network.roads[3], forward: 2 };
+  const [drop, exit] = network.nodes.slice(-2);
+  const approaches = graph => junctionMovements(graph, drop).filter(move => move.from === "j2");
+  assert.equal(isLaneDrop(network, drop), true);
+  assert.deepEqual(approaches(network).map(move => [move.fromLane, move.to, move.toLane]), [[0, "j1", 0], [1, "j1", 0]]);
+  const taper = networkLaneSamples(network.roads[5], network, networkNodes(network), false, 0);
+  assert.ok(taper.at(-1).x < taper.at(-6).x);
+
+  const slip = { a: drop.id, b: exit.id, forward: 1, backward: 0, bend: 0,
+    laneA: { neighbor: "j2", lane: 0 }, laneB: { neighbor: "east", lane: 0 }, controls: [270, 215, 306, 180] };
+  const branch = connectNetworkRoad(network, slip);
+  assert.ok(branch.network, branch.issue);
+  assert.ok(validate({ ...baseline, network: branch.network }));
+  assert.deepEqual(approaches(branch.network).map(move => [move.fromLane, move.to, move.toLane]), [[1, "j1", 0], [0, exit.id, 0]]);
+  const receiving = graph => junctionMovements(graph, exit).find(move => move.from === drop.id && move.to === "east");
+  assert.equal(receiving(branch.network).toLane, 0);
+  const index = branch.network.roads.indexOf(slip);
+  const moved = moveRoadLaneAnchor(branch.network, index, "b", { id: exit.id, anchor: { neighbor: "east", lane: 1 } });
+  assert.ok(moved.network, moved.issue);
+  assert.equal(receiving(moved.network).toLane, 1);
+  const road = moved.network.roads[index];
+  const path = networkLaneSamples(road, moved.network, networkNodes(moved.network), true, 0);
+  assert.ok(Math.abs(path.at(-1).y - 183) < 1e-6);
+  assert.equal(isLaneDrop(removeNetworkRoad(branch.network, index), drop), true);
+});
+
+test("a curve pull follows the finger across the chord with fixed endpoints", () => {
+  const a = { id: "j1", x: 200, y: 300 }, b = { id: "j2", x: 300, y: 300 };
+  assert.equal(roadCurveFromPull(a, b, { x: 25, y: 0 }), undefined);
+  const controls = roadCurveFromPull(a, b, { x: 25, y: -30 });
+  const curve = networkRoadGeometry({ a: a.id, b: b.id, bend: 0, controls }, new Map([[a.id, a], [b.id, b]]));
+  assert.deepEqual(curve.start, a);
+  assert.deepEqual(curve.end, b);
+  assert.equal(curve.samples[50].y, 270);
+});
 
 test("splitting a road keeps movement rules attached to the original intersection", () => {
   const network = starterNetwork();

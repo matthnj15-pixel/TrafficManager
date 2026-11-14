@@ -211,6 +211,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(wasm.error, undefined);
         for (const side of ["original", "edited"]) {
           assert.deepEqual(wasm[side].results, native[side].results);
+          assert.deepEqual(wasm[side].signals.map(signal => signal.switches), native[side].signals.map(signal => signal.switches));
           assert.equal(wasm[side].results.collisions, 0);
           assert.equal(wasm[side].frames.length, native[side].frames.length);
           for (const [index, frame] of wasm[side].frames.entries()) {
@@ -340,6 +341,8 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(await page.locator("[data-demand-layer] path").count(), 3);
         assert.equal(await page.evaluate(() => window.getSelection().toString()), "");
         await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        assert.ok(await page.getByText("From South", { exact: true }).isVisible());
+        assert.equal(await page.locator('[data-tool="junction"]:visible').getAttribute("aria-pressed"), "false");
         await page.screenshot({ path: "test-results/clean-slate-demand.png" });
         await click("School access connection");
         const mapTap = async (x, y) => {
@@ -532,5 +535,97 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     await context.close();
   } finally {
     await browser?.close();
+  }
+});
+
+test("draw a lane-specific slip with the curve ball, then drag its endpoint to another lane", { timeout: 45000 }, async () => {
+  await waitForServer();
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+  try {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    page.setDefaultTimeout(4500);
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(url);
+    const click = name => page.getByRole("button", { name, exact: true }).click();
+    const map = page.locator("#map");
+    const toScreen = (x, y) => map.evaluate((svg, [x, y]) => {
+      const point = new DOMPoint(x, y).matrixTransform(svg.getScreenCTM());
+      return { x: point.x, y: point.y };
+    }, [x, y]);
+    const tap = async (x, y) => {
+      const point = await toScreen(x, y);
+      await page.touchscreen.tap(point.x, point.y);
+    };
+    const road = label => page.getByRole("button", { name: label, exact: true });
+    const port = key => page.locator(`[data-road-lane="${key}"]`);
+    const center = selector => page.locator(selector).evaluate(circle => [circle.cx.baseVal.value, circle.cy.baseVal.value]);
+    const cdp = await context.newCDPSession(page);
+    const touch = (type, point) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [point] : [] });
+    const save = () => page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+    const branch = graph => graph.roads.find(item => item.laneA && item.laneB);
+    await click("Add node");
+    await tap(270, 250);
+    await click("Add node");
+    await tap(338, 180);
+    await tap(270, 283);
+    await click("Add lane left");
+    await tap(402, 180);
+    await click("Add lane right");
+    await click("Draw");
+    const start = port("j3:j2:0");
+    await start.waitFor();
+    assert.equal(await start.evaluate(item => item.classList.contains("extra-lane")), true);
+    await start.press("Enter");
+    await click("Keep lane merge");
+    assert.equal(await port("j3:j2:0").getAttribute("aria-pressed"), "false");
+    await start.press("Enter");
+    await click("Junction 4");
+    const end = await center('[data-road-lane="j4:east:0"] circle:nth-child(2)');
+    const down = await toScreen(...end);
+    await touch("touchStart", down);
+    await page.locator(".draw-curve-ball").waitFor();
+    await touch("touchMove", { x: down.x + 17, y: down.y + 15 });
+    await page.screenshot({ path: "test-results/road-curve-gesture.png" });
+    await touch("touchEnd");
+    await click("Apply");
+    const authored = (await save()).network;
+    const slip = branch(authored);
+    assert.ok(slip, await page.locator("#detail").textContent());
+    assert.deepEqual(slip.laneA, { neighbor: "j2", lane: 0 });
+    assert.deepEqual(slip.laneB, { neighbor: "east", lane: 0 });
+    assert.equal(slip.a, "j3");
+    assert.equal(slip.b, "j4");
+    assert.equal(slip.controls.length, 4);
+    await click("Select");
+    await road(`Road ${authored.roads.indexOf(slip) + 1}`).press("Enter");
+    await click("Move lane end");
+    const handle = await center('[data-road-lane="j4:east:0"] circle:nth-child(2)');
+    const receiving = await center('[data-road-lane="j4:east:1"] circle:nth-child(2)');
+    assert.ok(Math.abs(handle[1] - receiving[1]) >= 5);
+    const endpointHandle = await center('[data-lane-end="b"] circle:nth-child(2)');
+    await touch("touchStart", await toScreen(...endpointHandle));
+    await touch("touchMove", await toScreen((endpointHandle[0] + receiving[0]) / 2, (endpointHandle[1] + receiving[1]) / 2));
+    await touch("touchMove", await toScreen(...receiving));
+    await touch("touchEnd");
+    await click("Apply");
+    assert.deepEqual(branch((await save()).network).laneB, { neighbor: "east", lane: 1 });
+    await page.reload();
+    await click("Test design");
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+    const lamps = page.locator("#design-map .replay-signal circle");
+    assert.ok(await lamps.count() > 0);
+    const colors = () => lamps.evaluateAll(items => items.map(item => item.getAttribute("fill")));
+    const initial = await colors();
+    const scrub = page.getByRole("slider", { name: "Simulation time" });
+    await scrub.fill("44");
+    assert.notDeepEqual(await colors(), initial);
+    await click("Results");
+    await page.getByText("Slip lane trips", { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser.close();
   }
 });
