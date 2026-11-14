@@ -1104,17 +1104,18 @@ function intersectionControls(node) {
       ${sign("yield", `Yield ${suffix}`, props("movement-rule", "yield"), node.control === "priority" && laneRule === "yield", ruleDisabled)}
       ${sign("close", `Clear ${suffix} rule`, props("movement-rule", "default"), undefined, ruleDisabled || !["stop", "yield"].includes(laneRule))}
       </div></div>
-    <div class="mode-group"><div class="group-label">Allowed movements</div><div class="movement-actions">
+    <div class="mode-group intersection-movements"><div class="group-label">Allowed movements</div><div class="movement-actions">
       ${bulk("Remove all", "remove-movements", node.movements?.length === 0)}
       ${bulk("Reset default", "reset-movements", !node.movements)}
       <button data-action="draw-movements" aria-label="Draw movement" aria-pressed="${junctionMode === "draw" && !erasing}">Draw</button>
     </div></div>
     <div class="intersection-footer">
       <button data-action="intersection-overview">Map overview</button>
-      <button data-action="move-free-node">Move node</button>
-      ${(node.control !== "priority" || movement) ?
-        (movement ? '<button data-action="remove-selected-movement" aria-label="Remove movement">Remove turn</button>' :
-          '<button data-intersection-control="priority">Clear control</button>') : ""}
+      <details class="intersection-options"><summary aria-label="Junction options">${icon("more")}</summary><div>
+        <button data-action="move-free-node">Move node</button>
+        ${movement ? '<button data-action="remove-selected-movement" aria-label="Remove movement">Remove turn</button>' : ""}
+        ${node.control !== "priority" ? '<button data-intersection-control="priority">Clear control</button>' : ""}
+      </div></details>
     </div></div>`;
 }
 

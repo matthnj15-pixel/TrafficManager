@@ -294,7 +294,7 @@ button:not(:disabled):active { filter: brightness(.9); }
 .segment-options { position: relative; margin-top: 4px; }
 .segment-options summary { width: 100%; display: flex; justify-content: flex-start; gap: 6px; padding: 0 9px; font-size: .81rem; font-weight: 620; }
 .segment-options summary svg { width: 17px; height: 17px; }
-.segment-options[open] > div, .draft-accessory[open] > div {
+.segment-options[open] > div, .draft-accessory[open] > div, .intersection-options[open] > div {
   position: absolute;
   z-index: 2;
   bottom: calc(100% + 5px);
@@ -320,6 +320,7 @@ details summary {
 }
 details summary::-webkit-details-marker { display: none; }
 .draft-accessory { position: relative; }
+.intersection-options { position: relative; }
 .junction-signs { display: flex; gap: 4px; }
 .junction-signs button { flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; }
 .junction-signs + .group-label { margin-top: 6px; }
@@ -328,8 +329,9 @@ details summary::-webkit-details-marker { display: none; }
 .junction-signs circle:nth-of-type(2) { fill: #e6c56d; }
 .junction-signs circle:nth-of-type(3) { fill: #71c49a; }
 .movement-actions { display: grid; gap: 4px; }
-.movement-actions button { min-width: 0; min-height: 42px; text-align: left; padding-left: 9px; }
-.intersection-footer { justify-content: flex-start; margin-top: 0; }
+.intersection-movements { grid-column: 2; grid-row: 1 / span 2; }
+.inspector .movement-actions button { min-width: 0; text-align: left; padding-left: 9px; }
+.intersection-footer { grid-column: 1; grid-row: 2; align-self: start; justify-content: flex-start; margin-top: 0; }
 .intersection-footer button { padding-inline: 8px; font-size: .71rem; }
 .empty-tools { display: flex; gap: 6px; }
 .draft-target, [data-segment-shift] { cursor: grab; touch-action: none; }
@@ -479,6 +481,11 @@ input[type="range"] { min-width: 50px; flex: 1; height: 34px; margin: 0; accent-
   .builder-tools button { gap: 3px; }
   .traffic-legend { gap: 3px 6px; }
   .metrics th, .metrics td { padding-left: 4px; }
+}
+@media (max-width: 345px) {
+  .title { gap: 4px; padding-inline: 5px 7px; font-size: .88rem; }
+  .scenario-icon { width: 24px; height: 24px; }
+  .menu-chevron { width: 12px; height: 12px; }
 }
 @media (max-width: 460px) and (min-height: 760px) {
   .comparison { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
