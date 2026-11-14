@@ -1,6 +1,6 @@
 # Traffic Manager
 
-Traffic Manager is a road-design puzzle with five playable traffic problems on the Alder Avenue map.
+Traffic Manager is a road-design puzzle with five maps and different traffic problems to solve.
 
 ## Play on iPhone
 
@@ -14,15 +14,15 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 
 [Gameplay catalog](GAMEPLAY.md)
 
-Choose a level from the main menu. Each level has its own starting network, demand, and saved design. Use **Move** to clear the active tool and pan from anywhere on the map. In **Draw**, preview a straight, curved, complex, or freeform road and tap **Apply** to build it. In **Select**, tap a road to edit its lanes and alignment, or tap a junction to set traffic rules and allowed movements. Open **Simulate** to replay the traffic against the original level layout. **Results** shows your objective, queues, delays, and completed trips.
+Choose a level from the main menu. Each level has its own starting network, demand, and saved design. Use **Move** to clear the active tool and pan from anywhere on the map. In **Draw**, choose a road shape and elevation, then tap **Apply** to build it. In **Select**, tap a road to edit its lanes and alignment, or tap a junction to set traffic rules and allowed movements. At an eligible junction, **Build structure** creates a roundabout or separates the two crossing roads. Open **Simulate** to replay the traffic against the original level layout. **Results** shows your objective, queues, delays, and completed trips.
 
 | Level | Starting problem | Objective |
 | --- | --- | --- |
 | School Pickup | A stop sign backs up the pickup exit | Complete more pickup trips |
-| Four-Way Backup | An all-way stop meters every approach | Complete more trips |
-| Short Merge | Two northbound lanes narrow before the signal | Complete more trips |
-| Bus Bottleneck | A tight bend and stop sign delay the school buses | Reduce bus delay |
-| Cross-Town Rush | Two signals queue traffic and the bypass runs the wrong way | Complete more trips |
+| Market Square | Four busy streets meet at an all-way stop | Complete more trips |
+| Harbor Merge | Ferry and highway traffic share a short merge | Complete more trips to the north highway |
+| Station Bottleneck | Buses detour through a tight service road | Reduce bus delay |
+| Cross-Town Rush | Two heavy through routes share one signal | Complete more trips |
 
 ## Original corridor saves
 
@@ -61,4 +61,4 @@ npx playwright install chromium
 TRAFFIC_TEST_SUMO=1 npm run test:browser
 ```
 
-The native test runner and the offline game use the same SUMO network builder, signal program, and results parser. Browser tests exercise touch edits at 669 × 951 and 390 × 844, reload offline, and rerun the saved design.
+The native test runner and the offline game use the same SUMO network builder, signal program, and results parser. Browser tests exercise mobile touch edits, reload offline, and rerun the saved design.

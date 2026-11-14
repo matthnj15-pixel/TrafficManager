@@ -4,17 +4,17 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, levels, levelStart, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
+import { avenueSegments, baseline, buildNetworkRoundabout, connectNetworkRoad, duration, junctionMovements, levels, levelStart, separateNetworkJunction, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
 import { configureJunctions, netconvertArgs, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
 
 test("each level starts below an achievable goal with the same demand", async () => {
   const fixes = [
     ({ nodes, roads }) => { nodes[1].control = "traffic_light"; roads[0].backward = roads[3].backward = 2; },
-    ({ nodes }) => { nodes[0].control = "traffic_light"; },
-    ({ roads }) => { roads[0].backward = roads[3].backward = 2; },
-    ({ roads }) => { roads[5].atB = undefined; },
-    ({ roads }) => { const bypass = roads.at(-1); bypass.forward = 0; bypass.backward = 1; }
+    network => buildNetworkRoundabout(network, "j1", 34),
+    ({ roads }) => { roads[2].forward = 3; roads[3].forward = 2; },
+    ({ nodes }) => { delete nodes[1].laneRules; },
+    network => separateNetworkJunction(network, "j1", "j3", -1)
   ];
   const dir = await mkdtemp(join(tmpdir(), "traffic-level-goals-"));
   const command = (program, args) => {
@@ -22,7 +22,8 @@ test("each level starts below an achievable goal with the same demand", async ()
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   };
   const run = async (request, layout) => {
-    for (const [name, contents] of Object.entries(sumoInputs(request, layout))) await writeFile(join(dir, name), contents);
+    const files = sumoInputs(request, layout);
+    for (const [name, contents] of Object.entries(files)) await writeFile(join(dir, name), contents);
     command("netconvert", netconvertArgs);
     const net = configureJunctions(await readFile(join(dir, "corridor.net.xml"), "utf8"), layout.design, request.signalCycle);
     await writeFile(join(dir, "corridor.net.xml"), net);
@@ -30,21 +31,46 @@ test("each level starts below an achievable goal with the same demand", async ()
     if (signal) await writeFile(join(dir, "signals.add.xml"), signal);
     command("sumo", sumoArgs(request, !!signal));
     const [trace, trips, collisions] = await Promise.all(["trace.xml", "trips.xml", "collisions.xml"].map(name => readFile(join(dir, name), "utf8")));
-    return sumoResult(request, layout, trace, trips, collisions, net).results;
+    const deck = layout.design.network.roads.find(road => road.grade);
+    if (deck) {
+      assert.equal(layout.design.network.nodes.some(node => node.id === "j1"), false);
+      assert.doesNotMatch(net, /<junction id="j1"/);
+      assert.ok(trace.includes(`z="${(5.5 * deck.grade).toFixed(4)}"`));
+    }
+    if (layout.design.network.roads.some(road => road.roundabout)) {
+      assert.match(net, /<roundabout nodes="[^"]+" edges="[^"]+"/);
+      const ringIndices = layout.design.network.roads.flatMap((road, index) => road.roundabout ? [index] : []);
+      const entries = new RegExp(`<connection from="road-[0-3]-[fb]" to="road-(?:${ringIndices.join("|")})-f"[^>]+state="m"`, "g");
+      assert.equal([...net.matchAll(entries)].length, 4);
+    }
+    const run = sumoResult(request, layout, trace, trips, collisions, net);
+    if (deck) assert.ok(run.frames.some(frame => frame.markers.some(marker => marker.grade === deck.grade)));
+    return run.results;
   };
   try {
     for (const [index, level] of levels.entries()) {
       const design = levelStart(level.id);
-      fixes[index](design.network);
+      const result = fixes[index](design.network);
+      assert.ok(!result?.issue, result?.issue);
+      if (result?.network) design.network = result.network;
       const request = sumoRequest(design, level.id);
       const before = await run(request, request.original);
       const after = await run(request, request.edited);
       assert.equal(before.unserved, 0, level.id);
+      assert.equal(before.collisions, 0, level.id);
       assert.equal(after.unserved, 0, level.id);
       assert.equal(after.collisions, 0, level.id);
       assert.ok(after.finished >= before.finished, level.id);
       const delta = after[level.metric] - before[level.metric];
       assert.ok(level.metric === "busDelay" ? delta < -1 : delta > 0, level.id);
+      if (index === 4) {
+        const bridge = separateNetworkJunction(levelStart(level.id).network, "j1", "j2", 1);
+        assert.ok(bridge.network, bridge.issue);
+        const comparison = sumoRequest({ ...design, network: bridge.network }, level.id);
+        const over = await run(comparison, comparison.edited);
+        assert.equal(over.finished, after.finished);
+        assert.equal(over.collisions, 0);
+      }
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -271,6 +271,7 @@ export function scheduledTrips(withSouthbound) {
 }
 
 export function tripTerminals(trip) {
+  if (trip.from && trip.to) return [trip.from, trip.to];
   if (trip.origin === "cross") return [trip.from ?? "west", trip.destination ?? "east"];
   if (trip.origin === "southbound") return [trip.from ?? "north", trip.destination ?? "south"];
   return [trip.origin === "ramp" ? "pickup" : "south", trip.destination];
@@ -290,73 +291,209 @@ export function starterNetwork() {
   return { nodes, roads };
 }
 
+const terminal = (id, name, x, y, dx, dy) => ({ id, name, x, y, dx, dy });
+const place = (name, x, y, w, h, color) => ({ name, x, y, w, h, color });
+
+export const maps = {
+  "school-pickup": { terminals, trees, buildings: siteFootprints },
+  "four-way-backup": {
+    terminals: {
+      west: terminal("west", "Market West", 35, 352, -24, 0),
+      east: terminal("east", "High Street", 468, 285, 24, 0),
+      north: terminal("north", "Old Town", 200, 93, 0, -23),
+      south: terminal("south", "Park Gate", 308, 596, 0, 24)
+    },
+    grass: "#e0d7bc", plots: "#ddd0ac", foliage: "#829364", water: "#b8c7b2",
+    parcels: ["M24 121H162V271H24Z M305 112H469V231H333L298 156Z", "M40 428H234V560H40Z M347 381H468V566H347Z"],
+    buildings: [place("Market Hall", 65, 218, 96, 54, "#bc7c61"), place("Old Town", 276, 139, 70, 54, "#b98f77"),
+      place("High Street shops", 381, 350, 56, 92, "#b08963"), place("Park Pavilion", 114, 457, 61, 40, "#b9a17c")],
+    trees: [[81, 125], [138, 159], [385, 163], [428, 193], [72, 458], [200, 498], [383, 507], [443, 495]]
+  },
+  "short-merge": {
+    terminals: {
+      north: terminal("north", "North Highway", 393, 99, 8, -23),
+      west: terminal("west", "West Highway", 35, 216, -23, -3),
+      south: terminal("south", "Ferry Terminal", 134, 584, 0, 24),
+      east: terminal("east", "Cargo Yard", 458, 392, 24, 0)
+    },
+    grass: "#c4d1c4", plots: "#b6c5b3", foliage: "#6d897e", water: "#719aa0",
+    parcels: ["M12 291H163V525H12Z M217 96H333V183H217Z", "M228 409H480V566H228Z"],
+    waterPath: "M395 511 450 495 484 446H560V740H-25V622H100L166 605 249 586 317 564Z",
+    buildings: [place("Ferry sheds", 57, 509, 51, 36, "#9a9f88"), place("Harbor Warehouse", 272, 435, 108, 43, "#8c9c94"),
+      place("Cargo offices", 394, 440, 65, 34, "#a49278")],
+    trees: [[63,315],[90,373],[99,441],[233,137],[275,151],[353,539],[408,512]]
+  },
+  "bus-bottleneck": {
+    terminals: {
+      west: terminal("west", "Bus Depot", 37, 441, -23, 0),
+      north: terminal("north", "Rail Station", 400, 97, 0, -23),
+      south: terminal("south", "South Estate", 397, 595, 0, 24),
+      east: terminal("east", "Civic Center", 468, 370, 24, 0)
+    },
+    grass: "#d8d4c8", plots: "#c7c1ad", foliage: "#8e987f", water: "#a7b1ba",
+    parcels: ["M23 115H279V242H23Z M28 286H160V385H28Z", "M291 118H368V277H291Z M242 454H357V594H242Z"],
+    railPath: "M-20 138H225Q290 138 349 119T526 119",
+    buildings: [place("Station concourse", 288, 151, 75, 58, "#a98076"), place("Depot garage", 47, 299, 93, 57, "#8e8f9c"),
+      place("Civic Library", 298, 500, 59, 56, "#b1947c"), place("Station shops", 167, 193, 78, 38, "#b7a28d")],
+    trees: [[68,172],[103,217],[146,248],[99,500],[118,541],[271,575],[457,498],[456,229]]
+  },
+  "cross-town-rush": {
+    terminals: {
+      west: terminal("west", "West Interchange", 31, 225, -23, 0),
+      east: terminal("east", "East Interchange", 470, 430, 23, 0),
+      north: terminal("north", "North District", 387, 91, 5, -23),
+      south: terminal("south", "South District", 128, 593, -6, 23)
+    },
+    grass: "#ccd8cb", plots: "#bdcebe", foliage: "#6d9080", water: "#8fb2a6",
+    parcels: ["M30 96H229V172H30Z M271 114H345V190H271Z", "M424 167H478V342H400Z M48 320H136V494H48Z", "M298 492H480V580H298Z"],
+    buildings: [place("West Business Park", 66, 126, 92, 46, "#9e9e8c"), place("North District offices", 420, 208, 44, 69, "#a9948a"),
+      place("South District offices", 60, 390, 57, 74, "#9e9693"), place("East Business Park", 315, 508, 105, 51, "#90a399")],
+    trees: [[59,279],[82,295],[201,117],[305,169],[352,551],[448,548],[116,503],[59,553],[432,324]]
+  }
+};
+
 export const levels = [
   { id: "school-pickup", name: "School Pickup", problem: "The pickup exit backs up at a stop sign.", goal: "Get more pickup trips through.",
     metric: "pickupFinished", accent: "#a2d8be" },
-  { id: "four-way-backup", name: "Four-Way Backup", problem: "An all-way stop slows every approach on Alder Avenue.", goal: "Complete more trips.",
+  { id: "four-way-backup", name: "Market Square", problem: "Four busy streets meet at an all-way stop.", goal: "Move more traffic through the square.",
     metric: "finished", accent: "#f1d38e" },
-  { id: "short-merge", name: "Short Merge", problem: "Two northbound lanes squeeze into one before the signal.", goal: "Complete more trips.",
-    metric: "finished", accent: "#a8cfe9" },
-  { id: "bus-bottleneck", name: "Bus Bottleneck", problem: "Buses crawl through a tight school approach.", goal: "Reduce bus delay.",
+  { id: "short-merge", name: "Harbor Merge", problem: "Ferry and highway traffic share a short merge.", goal: "Get more vehicles onto the north highway.",
+    metric: "northFinished", accent: "#a8cfe9" },
+  { id: "bus-bottleneck", name: "Station Bottleneck", problem: "Buses detour through a tight service road.", goal: "Reduce bus delay.",
     metric: "busDelay", accent: "#d8bee5" },
-  { id: "cross-town-rush", name: "Cross-Town Rush", problem: "Two signals queue traffic, and the bypass points the wrong way.", goal: "Complete more trips.",
+  { id: "cross-town-rush", name: "Cross-Town Rush", problem: "Two heavy through routes share one signal.", goal: "Complete more trips across town.",
     metric: "finished", accent: "#edbd9d" }
 ];
 
 export function levelStart(id) {
-  const network = starterNetwork();
-  const [main, access] = network.nodes;
-  const pickup = network.roads.at(-1);
-  const road = (a, b, options) => ({ a, b, forward: 1, backward: 1, bend: 0, ...options });
-  if (id === "school-pickup") {
-    pickup.controls = [396, 440, 270, 377];
-    pickup.atB = "stop";
-  } else if (id === "four-way-backup") {
-    main.control = "allway_stop";
-  } else if (id === "short-merge") {
-    network.nodes.push({ id: "j3", x: 270, y: 226, control: "priority" });
-    network.roads.splice(3, 1, road("j1", "j3"), road("j3", "j2", { backward: 2 }));
-    network.roads.find(item => item.a === "j2" && item.b === "south").backward = 2;
-  } else if (id === "bus-bottleneck") {
-    network.nodes.push({ id: "j3", x: 219, y: 361, control: "priority" });
-    network.roads.splice(5, 1, road(access.id, "j3", { controls: [243, 332, 235, 361], atB: "stop" }),
-      road("j3", "school", { controls: [189, 360, 156, 351] }));
-  } else if (id === "cross-town-rush") {
-    network.nodes.push({ id: "j3", x: 339, y: 180, control: "traffic_light" });
-    network.roads.splice(2, 1, road(main.id, "j3"), road("j3", "east"));
-    network.roads.push(road("j3", "pickup", { backward: 0, controls: [336, 306, 360, 435] }));
+  if (!maps[id] || id === "school-pickup") {
+    const network = starterNetwork();
+    Object.assign(network.roads.at(-1), { controls: [396, 440, 270, 377], atB: "stop" });
+    return { ...baseline, network };
   }
-  return { ...baseline, network };
+  const junction = (number, x, y, control = "priority") => ({ id: `j${number}`, x, y, control });
+  const road = (a, b, options) => ({ a, b, forward: 1, backward: 1, bend: 0, ...options });
+  let nodes, roads;
+  if (id === "four-way-backup") {
+    nodes = [junction(1, 257, 316, "allway_stop")];
+    roads = [road("west", "j1", { controls: [115, 350, 184, 329] }),
+      road("j1", "east", { controls: [335, 302, 394, 285] }),
+      road("north", "j1", { controls: [198, 162, 227, 238] }),
+      road("j1", "south", { controls: [288, 396, 309, 512] })];
+  } else if (id === "short-merge") {
+    nodes = [junction(1, 231, 272), junction(2, 311, 249)];
+    roads = [
+      road("west", "j1", { forward: 2, backward: 0, controls: [96, 215, 165, 278] }),
+      road("south", "j1", { backward: 0, atB: "yield", controls: [148, 432, 141, 314] }),
+      road("j1", "j2", { backward: 0, controls: [264, 260, 292, 258] }),
+      road("j2", "north", { backward: 0, controls: [354, 229, 376, 166] }),
+      road("j2", "east", { backward: 0, controls: [350, 268, 366, 393] })
+    ];
+  } else if (id === "bus-bottleneck") {
+    nodes = [junction(1, 191, 441), junction(2, 264, 353), junction(3, 397, 344, "traffic_light")];
+    nodes[1].laneRules = { "j1:0": "stop" };
+    roads = [
+      road("west", "j1"),
+      road("j1", "j2", { controls: [240, 441, 219, 372] }),
+      road("j2", "j3", { controls: [294, 337, 349, 344] }),
+      road("j3", "north", { controls: [402, 263, 400, 183] }),
+      road("south", "j3"),
+      road("j3", "east")
+    ];
+  } else {
+    nodes = [junction(1, 252, 323, "traffic_light"), junction(2, 134, 262), junction(3, 331, 176), junction(4, 175, 484), junction(5, 382, 404)];
+    roads = [
+      road("west", "j2"), road("j2", "j1"), road("j1", "j5"), road("j5", "east"),
+      road("north", "j3"), road("j3", "j1"), road("j1", "j4"), road("j4", "south")
+    ].map(road => ({ ...road, forward: 2, backward: 2 }));
+  }
+  return { ...baseline, network: { map: id, nodes, roads } };
 }
 
 export function levelTrips(id, design) {
-  const trips = scheduledTrips(design.road != null || design.network != null);
-  const extra = [];
-  const add = (count, build) => {
-    for (let index = 0; index < count; index++) extra.push({ ...build(index), id: trips.length + extra.length });
-  };
-  if (id === "school-pickup") {
-    for (const trip of trips) {
+  if (!maps[id] || id === "school-pickup") {
+    const trips = scheduledTrips(design.road != null || design.network != null);
+    if (id === "school-pickup") for (const trip of trips) {
       if (trip.origin === "ramp") trip.time = 18 + trip.pickupIndex * 2.45;
     }
-  } else if (id === "four-way-backup") {
-    add(16, i => ({ time: 15 + i * 6, kind: "car", origin: "cross", from: "east", destination: "west" }));
-  } else if (id === "short-merge") {
-    add(10, i => ({ time: 32 + i * 2.4, kind: "car", origin: "outer", destination: i % 2 ? "east" : "north" }));
-  } else if (id === "bus-bottleneck") {
-    add(9, i => ({ time: 18 + i * 14, kind: "bus", origin: "outer", destination: "school" }));
-  } else if (id === "cross-town-rush") {
-    add(18, i => ({ time: 21 + i * 6, kind: "car", origin: "cross", from: "east", destination: i % 3 ? "west" : "south" }));
+    return trips.sort((a, b) => a.time - b.time || a.id - b.id);
   }
-  return [...trips, ...extra].sort((a, b) => a.time - b.time || a.id - b.id);
+  const trips = [];
+  const flow = (from, to, count, first, spacing, { kind = "car", origin = "cross" } = {}) => {
+    for (let i = 0; i < count; i++) trips.push({ id: trips.length, from, to, time: first + i * spacing, kind, origin });
+  };
+  if (id === "four-way-backup") {
+    flow("west", "south", 27, 3, 5.7);
+    flow("south", "east", 29, 2, 5.4);
+    flow("east", "north", 26, 4, 5.8);
+    flow("north", "west", 27, 6, 5.6);
+    flow("south", "north", 20, 6, 7.9);
+    flow("east", "west", 15, 4, 10);
+    flow("west", "east", 13, 2, 12);
+  } else if (id === "short-merge") {
+    flow("west", "north", 62, 3, 2.45);
+    flow("south", "north", 36, 31, 3.15, { kind: "pickup", origin: "ramp" });
+    flow("west", "east", 21, 13, 6.7);
+    flow("south", "east", 11, 51, 8);
+  } else if (id === "bus-bottleneck") {
+    flow("west", "north", 16, 5, 9.2, { kind: "bus", origin: "outer" });
+    flow("west", "east", 26, 9, 5);
+    flow("south", "north", 36, 4, 4.4, { origin: "southbound" });
+    flow("east", "south", 24, 8, 6.5);
+    flow("north", "west", 20, 10, 7.8);
+  } else {
+    flow("west", "east", 45, 2, 3.65);
+    flow("east", "west", 36, 5, 4.55);
+    flow("north", "south", 45, 3, 3.6, { origin: "southbound" });
+    flow("south", "north", 36, 6, 4.4, { origin: "southbound" });
+  }
+  return trips.sort((a, b) => a.time - b.time || a.id - b.id);
+}
+
+export function networkMap(network) {
+  return Object.hasOwn(maps, network?.map) ? maps[network.map] : maps["school-pickup"];
+}
+
+export function networkTerminals(network) {
+  return networkMap(network).terminals;
 }
 
 export function networkNodes(network) {
-  return new Map([...Object.values(terminals), ...network.nodes].map(node => [node.id, node]));
+  return new Map([...Object.values(networkTerminals(network)), ...network.nodes].map(node => [node.id, node]));
 }
 
 export const movementKey = ({ from, to, fromLane, toLane }) => `${from}:${fromLane}>${to}:${toLane}`;
 export const incomingLaneKey = (neighbor, lane) => `${neighbor}:${lane}`;
+export const roadGrade = road => road.grade ?? 0;
+
+export function roundaboutLoops(network) {
+  const loops = new Map();
+  for (const road of network.roads) {
+    if (!road.roundabout) continue;
+    if (!loops.has(road.roundabout)) loops.set(road.roundabout, []);
+    loops.get(road.roundabout).push(road);
+  }
+  return loops;
+}
+
+export function networkNodeElevation(network, id) {
+  if (networkTerminals(network)[id]) return 0;
+  const attached = network.roads.filter(road => road.a === id || road.b === id);
+  if (attached.length < 2) return 0;
+  const grade = roadGrade(attached[0]);
+  return attached.every(road => roadGrade(road) === grade) ? grade * 5.5 : 0;
+}
+
+export function roadElevationProfile(network, road, length) {
+  if (!roadGrade(road)) return () => 0;
+  const startsAtLevel = !!networkNodeElevation(network, road.a);
+  const endsAtLevel = !!networkNodeElevation(network, road.b);
+  const ramp = Math.min(52, length * .35);
+  return distance => {
+    const rise = clamp(Math.min(startsAtLevel ? length : distance, endsAtLevel ? length : length - distance) / ramp, 0, 1);
+    return road.grade * 5.5 * rise * rise * (3 - 2 * rise);
+  };
+}
 
 export function junctionLegs(network, id, nodes = networkNodes(network)) {
   return network.roads.flatMap((road, index) => {
@@ -385,6 +522,7 @@ export function junctionMovements(network, node, applyLaneRules = true) {
 
 function defaultJunctionMovements(network, node) {
   const legs = junctionLegs(network, node.id);
+  const mergeOffsets = oneWayMergeOffsets(legs);
   return legs.flatMap(from => {
     if (!from.incoming) return [];
     const through = throughLeg(legs, from, "outgoing");
@@ -395,14 +533,28 @@ function defaultJunctionMovements(network, node) {
       Array.from({ length: from.incoming }, (_, fromLane) => {
         const move = {
           from: from.neighbor, to: to.neighbor, fromLane,
-          toLane: from.arrivalAnchor?.lane ?? clamp(fromLane + (to === through ? throughLaneDelta(from, to) :
-            Math.max(0, to.outgoing - from.incoming)), 0, to.outgoing - 1),
+          toLane: from.arrivalAnchor?.lane ?? clamp(fromLane + (mergeOffsets.get(from) ??
+            (to === through ? throughLaneDelta(from, to) : Math.max(0, to.outgoing - from.incoming))), 0, to.outgoing - 1),
           rule: from.rule
         };
         if ((exitingLanes.has(fromLane) && !to.departureAnchor) || !fitsLaneAnchors(move, from, to)) return undefined;
         return move;
       }).filter(Boolean));
   });
+}
+
+function oneWayMergeOffsets(legs) {
+  if (legs.length !== 3 || legs.some(leg => leg.slip || leg.road.roundabout || leg.road.laneShift || leg.incoming && leg.outgoing)) return new Map();
+  const exits = legs.filter(leg => leg.outgoing);
+  if (exits.length !== 1) return new Map();
+  const [exit] = exits;
+  const feeders = legs.filter(leg => leg.incoming);
+  if (feeders.reduce((count, feeder) => count + feeder.incoming, 0) > exit.outgoing) return new Map();
+  // Lanes are numbered from the right edge. Allocate separate lanes when
+  // the merge has enough room for both approaches side by side.
+  const side = leg => Math.sin(leg.bearing - exit.bearing);
+  feeders.sort((a, b) => side(b) - side(a));
+  return new Map([[feeders[0], 0], [feeders[1], feeders[0].incoming]]);
 }
 
 function fitsLaneAnchors(move, from, to) {
@@ -481,11 +633,11 @@ function validMovement(movement, legs) {
 
 function validLaneAnchor(anchor, road, atA, network) {
   if (anchor === undefined) return true;
-  if (!anchor || road.forward !== 1 || road.backward !== 0 || !Number.isInteger(anchor.lane) || anchor.lane < 0) return false;
+  if (!anchor || roadGrade(road) || road.roundabout || road.forward !== 1 || road.backward !== 0 || !Number.isInteger(anchor.lane) || anchor.lane < 0) return false;
   const host = network.roads.find(item => item !== road &&
     (item.a === (atA ? road.a : road.b) && item.b === anchor.neighbor ||
      item.b === (atA ? road.a : road.b) && item.a === anchor.neighbor));
-  if (!host || host.laneA || host.laneB) return false;
+  if (!host || host.laneA || host.laneB || roadGrade(host) || host.roundabout) return false;
   const from = atA ? anchor.neighbor : road.b;
   return anchor.lane < (host.a === from ? host.forward : host.backward);
 }
@@ -703,21 +855,22 @@ export function freeformBendControls(start, end, delta) {
   return [...control(start), ...control(end)];
 }
 
-function footprintAt(point, clearance) {
+function footprintAt(point, clearance, network) {
   const { x, y } = point;
-  const building = siteFootprints.find(site =>
+  const { buildings, trees: mapTrees } = networkMap(network);
+  const building = buildings.find(site =>
     Math.hypot(Math.max(site.x - x, 0, x - site.x - site.w), Math.max(site.y - y, 0, y - site.y - site.h)) < clearance);
   if (building) return building.name;
-  if (trees.some(([tx, ty]) => Math.hypot(tx - x, ty - y) < clearance + 6)) return "a tree";
+  if (mapTrees.some(([tx, ty]) => Math.hypot(tx - x, ty - y) < clearance + 6)) return "a tree";
 }
 
-export function networkNodeIssue(point) {
-  const obstacle = footprintAt(point, 2);
+export function networkNodeIssue(point, network) {
+  const obstacle = footprintAt(point, 2, network);
   if (obstacle) return `This junction would overlap ${obstacle}.`;
   if (point.x < 8 || point.x > 492 || point.y < 68 || point.y > 622) return "Keep junctions inside the map.";
 }
 
-export function networkRoadIssue(network, road, ignore = -1) {
+export function networkRoadIssue(network, road, ignore = -1, checkElevation = true) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
   if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return "Choose a point farther away.";
@@ -729,14 +882,29 @@ export function networkRoadIssue(network, road, ignore = -1) {
   const offset = ((road.laneShift ?? 0) + (road.forward - road.backward) / 2) * networkLaneWidth;
   for (const point of laneCurve?.samples ?? samples) {
     const center = laneCurve ? point : { x: point.x - Math.sin(point.angle) * offset, y: point.y + Math.cos(point.angle) * offset };
-    const obstacle = footprintAt(center, clearance);
+    const obstacle = footprintAt(center, clearance, network);
     if (obstacle) return `This road would cross ${obstacle}.`;
     if (center.x < 8 || center.x > 492 || center.y < 68 || center.y > 622) return "Keep roads inside the map.";
   }
   for (const [index, other] of network.roads.entries()) {
     if (index === ignore) continue;
     if ([other.a, other.b].every(id => id === road.a || id === road.b)) return "These nodes already share a road.";
-    if (roadCrossings(road, other, nodes).length) return "Roads must meet at a shared junction.";
+    const sameLevel = roadGrade(road) === roadGrade(other);
+    if (!sameLevel && !checkElevation) continue;
+    const crossings = roadCrossings(road, other, nodes);
+    if (!crossings.length) continue;
+    if (sameLevel) return "Roads must meet at a shared junction.";
+    const crossing = networkRoadGeometry(other, nodes);
+    const height = roadElevationProfile(network, road, geometry.length);
+    const otherHeight = roadElevationProfile(network, other, crossing.length);
+    const distanceAt = (path, t) => {
+      const i = t * (path.samples.length - 1);
+      const before = path.samples[Math.floor(i)].length, after = path.samples[Math.ceil(i)].length;
+      return before + (after - before) * (i % 1);
+    };
+    if (crossings.some(hit => hit.overlap || Math.abs(height(distanceAt(geometry, hit.t)) - otherHeight(distanceAt(crossing, hit.u))) < 4.5)) {
+      return "Give the ramps more room on both sides of the crossing.";
+    }
   }
 }
 
@@ -827,6 +995,7 @@ function splitRoad(road, nodes, cuts) {
   const parts = [];
   const part = (a, b, c1, c2, first, last) => ({
     a: a.id, b: b.id, forward: road.forward, backward: road.backward, bend: 0,
+    ...(roadGrade(road) ? { grade: road.grade } : {}),
     ...(road.laneShift ? { laneShift: road.laneShift } : {}),
     ...(road.controls || road.bend ? { controls: [c1.x, c1.y, c2.x, c2.y] } : {}),
     ...(first && road.atA ? { atA: road.atA } : {}), ...(last && road.atB ? { atB: road.atB } : {}),
@@ -845,30 +1014,33 @@ function splitRoad(road, nodes, cuts) {
 }
 
 export function splitNetworkRoad(network, index, node, t) {
+  if (network.roads[index].roundabout) return { issue: "Connect at an existing roundabout entry." };
   const nodes = networkNodes(network);
   const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
   const roads = network.roads.flatMap((road, i) => i === index ? parts : road);
-  return checkNetworkEdit(remapSplitReferences({ nodes: [...network.nodes, node], roads }, network.roads[index], parts), network.roads);
+  return checkNetworkEdit(remapSplitReferences({ ...network, nodes: [...network.nodes, node], roads }, network.roads[index], parts), network.roads);
 }
 
-function draftedRoad(points, index, anchored, lanes, controls) {
+function draftedRoad(points, index, anchored, lanes, controls, grade) {
   const a = points[index], b = points[index + 1];
   return { a: a.id, b: b.id, ...(anchored ? { forward: 1, backward: 0 } : lanes), bend: 0,
+    ...(grade ? { grade } : {}),
     ...(a.anchor ? { laneA: a.anchor } : {}), ...(b.anchor ? { laneB: b.anchor } : {}),
     ...(controls[index] ? { controls: controls[index] } : {}) };
 }
 
-export function previewRoadDraft(network, points, lanes, controls) {
+export function previewRoadDraft(network, points, lanes, controls, grade = 0) {
   const resolved = points.map((point, index) => point.id ? point : { ...point, id: `preview-${index}`, control: "priority" });
   const graph = { ...network, nodes: [...network.nodes, ...resolved.filter(point => point.id.startsWith("preview-"))] };
   const nodes = networkNodes(graph);
   const anchored = points.some(point => point.anchor);
-  const roads = resolved.slice(1).map((_, index) => draftedRoad(resolved, index, anchored, lanes, controls));
+  const roads = resolved.slice(1).map((_, index) => draftedRoad(resolved, index, anchored, lanes, controls, grade));
   graph.roads = [...network.roads, ...roads];
   return { graph, nodes, roads, issue: roads.map(road => roadShapeIssue(graph, road, nodes)).find(Boolean) };
 }
 
-export function commitRoadDraft(network, points, lanes, controls) {
+export function commitRoadDraft(network, points, lanes, controls, grade = 0) {
+  if (grade && points.some(point => point.anchor)) return { issue: "Start elevated and tunnel roads from a junction or a free point." };
   const added = [...network.nodes];
   const originalNodes = networkNodes(network);
   const cuts = new Map();
@@ -880,19 +1052,20 @@ export function commitRoadDraft(network, points, lanes, controls) {
       anchors.push(point);
       continue;
     }
-    const issue = networkNodeIssue(point);
+    const issue = networkNodeIssue(point, network);
     if (issue) return { issue };
     const node = nextNetworkNode({ nodes: added }, point);
     added.push(node);
     anchors.push(node);
     if (point.index !== undefined) {
+      if (network.roads[point.index].roundabout) return { issue: "Connect at an existing roundabout entry." };
       if (!cuts.has(point.index)) cuts.set(point.index, []);
       cuts.get(point.index).push({ node, t: point.t });
     }
   }
   const splits = new Map([...cuts].map(([index, hits]) => [network.roads[index], splitRoad(network.roads[index], originalNodes, hits)]));
   const anchorHosts = new Map();
-  let next = { nodes: added, roads: network.roads.flatMap(road => splits.get(road) ?? [road]) };
+  let next = { ...network, nodes: added, roads: network.roads.flatMap(road => splits.get(road) ?? [road]) };
   for (const [road, parts] of splits) {
     anchorHosts.set(`${road.a}:${road.b}`, parts[0].b);
     anchorHosts.set(`${road.b}:${road.a}`, parts.at(-1).a);
@@ -901,7 +1074,7 @@ export function commitRoadDraft(network, points, lanes, controls) {
   const anchored = points.some(point => point.anchor);
   for (let index = 0; index < anchors.length - 1; index++) {
     const a = anchors[index], b = anchors[index + 1];
-    const road = draftedRoad(anchors, index, anchored, lanes, controls);
+    const road = draftedRoad(anchors, index, anchored, lanes, controls, grade);
     for (const [point, atStart, key] of [[a, true, "laneA"], [b, false, "laneB"]]) {
       if (!point.anchor) continue;
       const lookup = `${point.id}:${point.anchor.neighbor}`;
@@ -909,7 +1082,7 @@ export function commitRoadDraft(network, points, lanes, controls) {
       road[key] = { ...point.anchor, neighbor };
       if (!validLaneAnchor(road[key], road, atStart, next)) return { issue: "Choose a lane flowing in the right direction." };
     }
-    const result = connectNetworkRoad(next, road);
+    const result = connectNetworkRoad(next, road, -1, { checkElevation: false });
     if (!result.network) return result;
     next = road.laneA || road.laneB ? refreshLaneConnections(result.network, road) : result.network;
   }
@@ -923,6 +1096,7 @@ export function commitRoadDraft(network, points, lanes, controls) {
 }
 
 export function editNetworkCurve(network, index, controls) {
+  if (network.roads[index].roundabout) return { issue: "The roundabout uses a circular lane." };
   const road = { ...network.roads[index], controls, bend: 0 };
   const issue = roadShapeIssue(network, road, networkNodes(network));
   return issue ? { issue } : connectNetworkRoad(network, road, index);
@@ -931,7 +1105,7 @@ export function editNetworkCurve(network, index, controls) {
 export function slideJoinOptions(network, index, end, nodes = networkNodes(network)) {
   const road = network.roads[index];
   const id = road?.[end];
-  if (!id || terminals[id] || (end === "a" ? !road.laneA : !road.laneB)) return;
+  if (!id || networkTerminals(network)[id] || (end === "a" ? !road.laneA : !road.laneB)) return;
   const legs = junctionLegs(network, id, nodes).filter(leg => leg.road !== road);
   if (legs.length !== 2 || legs.some(leg => leg.slip) || Math.cos(legs[0].bearing - legs[1].bearing) > -.72) return;
   return { road, node: nodes.get(id), legs };
@@ -989,6 +1163,7 @@ export function applyRoadJoin(network, next) {
 export function shiftNetworkRoad(network, index, laneShift) {
   const road = network.roads[index];
   if (!road || laneShift === (road.laneShift ?? 0)) return { network };
+  if (road.roundabout) return { issue: "The roundabout uses a circular lane." };
   if (!Number.isInteger(laneShift) || Math.abs(laneShift) > maxLaneShift) return { issue: "Choose a lane within range." };
   const shifted = { ...road, laneShift: laneShift || undefined };
   const touches = (other, end, anchor) => anchor && (other[end] === road.a && anchor.neighbor === road.b ||
@@ -1014,7 +1189,7 @@ export function shiftNetworkRoad(network, index, laneShift) {
   const before = shape(road);
   const after = shape(shifted);
   for (const other of next.roads) {
-    if (other === shifted || [other.a, other.b].some(id => id === road.a || id === road.b)) continue;
+    if (other === shifted || roadGrade(other) !== roadGrade(road) || [other.a, other.b].some(id => id === road.a || id === road.b)) continue;
     const otherCenter = shape(other);
     const clearance = (shifted.forward + shifted.backward + other.forward + other.backward) * networkLaneWidth / 2;
     // Only reject newly created overlaps. A shift can also pull two previously
@@ -1056,9 +1231,10 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
   if (!node) return { issue: "This connection is fixed." };
   if (id === targetId || !targetId && !roadTarget && point.x === node.x && point.y === node.y) return { network };
   const target = targetId ? networkNodes(network).get(targetId) : point;
-  const issue = targetId ? undefined : networkNodeIssue(target);
+  const issue = targetId ? undefined : networkNodeIssue(target, network);
   if (issue) return { issue };
   const attached = network.roads.filter(road => road.a === id || road.b === id);
+  if (attached.some(road => road.roundabout) || network.roads[roadTarget?.index]?.roundabout) return { issue: "Connect at an existing roundabout entry." };
   const movedAnchorIds = road => {
     if (!targetId) return road;
     return {
@@ -1068,6 +1244,7 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
     };
   };
   let next = {
+    ...network,
     nodes: network.nodes.flatMap(item => item.id !== id ? [item] : targetId ? [] : [{ ...node, x: target.x, y: target.y }]),
     roads: network.roads.filter(road => !attached.includes(road))
   };
@@ -1076,7 +1253,7 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
     const parts = splitRoad(road, networkNodes(network), [{ node: { ...node, ...point }, t: roadTarget.t }]);
     next.roads = next.roads.flatMap(item => item === road ? parts : item);
     next = remapSplitReferences(next, road, parts);
-    const result = checkNetworkEdit(next, network.roads);
+    const result = checkNetworkEdit(next, network.roads, false);
     if (result.issue) return result;
   }
   for (const road of attached) {
@@ -1092,18 +1269,18 @@ export function moveNetworkNode(network, id, point, targetId, roadTarget) {
       moved.controls[offset] += target.x - node.x;
       moved.controls[offset + 1] += target.y - node.y;
     }
-    const result = connectNetworkRoad(next, moved);
+    const result = connectNetworkRoad(next, moved, -1, { checkElevation: false });
     if (result.issue) return result;
     next = result.network;
   }
-  return { network: next };
+  return checkNetworkEdit(next, network.roads);
 }
 
-function checkNetworkEdit(network, previousRoads) {
+function checkNetworkEdit(network, previousRoads, checkElevation = true) {
   if (network.nodes.length > 60 || network.roads.length > 90) return { issue: "This map is full." };
   for (const [index, road] of network.roads.entries()) {
-    if (previousRoads.includes(road)) continue;
-    const issue = networkRoadIssue(network, road, index);
+    if (previousRoads.includes(road) && (!checkElevation || !roadGrade(road))) continue;
+    const issue = networkRoadIssue(network, road, index, checkElevation);
     if (issue) return { issue };
   }
   return { network };
@@ -1120,7 +1297,7 @@ export function moveRoadLaneAnchor(network, index, end, target) {
   const nodes = networkNodes(network);
   let destination = id;
   if (!destination) {
-    const issue = networkNodeIssue(target);
+    const issue = networkNodeIssue(target, network);
     if (issue) return { issue };
     const node = nextNetworkNode(next, target);
     if (target.index !== undefined) {
@@ -1171,10 +1348,22 @@ function restoreReleasedLane(network, id, anchor) {
   return { ...network, nodes: network.nodes.map(item => item === node ? { ...item, movements } : item) };
 }
 
+function excludingRoads(network, removed) {
+  const rings = new Set(removed.flatMap(road => road.roundabout ? [road.roundabout] : []));
+  const next = { ...network, roads: network.roads.filter(road => !removed.includes(road) && !rings.has(road.roundabout)) };
+  return removed.reduce((graph, road) => road.laneA ? restoreReleasedLane(graph, road.a, road.laneA) : graph, next);
+}
+
 export function removeNetworkRoad(network, index) {
   const road = network.roads[index];
-  const next = { ...network, roads: network.roads.filter((_, i) => i !== index) };
-  return road?.laneA ? restoreReleasedLane(next, road.a, road.laneA) : next;
+  if (!road) return network;
+  return excludingRoads(network, [road]);
+}
+
+export function removeNetworkNode(network, id) {
+  const roads = network.roads.filter(road => road.a === id || road.b === id);
+  const next = excludingRoads(network, roads);
+  return checkNetworkEdit({ ...next, nodes: next.nodes.filter(node => node.id !== id) }, network.roads);
 }
 
 export function refreshLaneConnections(network, road, previous) {
@@ -1204,7 +1393,7 @@ export function refreshLaneConnections(network, road, previous) {
   return reconcileJunctionMovements(next);
 }
 
-export function connectNetworkRoad(network, road, replace = -1) {
+export function connectNetworkRoad(network, road, replace = -1, { checkElevation = true } = {}) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
   if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return { issue: "Choose a point farther away." };
@@ -1216,11 +1405,12 @@ export function connectNetworkRoad(network, road, replace = -1) {
   const cuts = [], otherCuts = new Map();
   const endpoint = (item, t) => t < 1e-6 ? nodes.get(item.a) : t > 1 - 1e-6 ? nodes.get(item.b) : undefined;
   for (const [index, other] of network.roads.entries()) {
-    if (index === replace) continue;
+    if (index === replace || roadGrade(road) !== roadGrade(other)) continue;
     for (const hit of roadCrossings(road, other, nodes)) {
       if (hit.overlap) return { issue: "These roads overlap. Draw a different path." };
+      if (other.roundabout && !endpoint(other, hit.u)) return { issue: "Connect at an existing roundabout entry." };
       const existing = endpoint(road, hit.t) ?? endpoint(other, hit.u) ??
-        addedNodes.find(node => Math.hypot(node.x - hit.x, node.y - hit.y) < .1);
+        cuts.find(({ node }) => Math.hypot(node.x - hit.x, node.y - hit.y) < .1)?.node;
       const node = existing ?? nextNetworkNode({ nodes: addedNodes }, hit);
       if (!existing) addedNodes.push(node);
       if (!endpoint(road, hit.t) && !cuts.some(cut => cut.node.id === node.id)) cuts.push({ node, t: hit.t });
@@ -1238,28 +1428,142 @@ export function connectNetworkRoad(network, road, replace = -1) {
   };
   const roads = network.roads.flatMap((other, i) => i === replace ? split(road, cuts) : split(other, otherCuts.get(i) ?? []));
   if (replace < 0) roads.push(...split(road, cuts));
-  const next = splits.reduce((graph, [item, parts]) => remapSplitReferences(graph, item, parts), { nodes: addedNodes, roads });
-  return checkNetworkEdit(next, network.roads);
+  const next = splits.reduce((graph, [item, parts]) => remapSplitReferences(graph, item, parts), { ...network, nodes: addedNodes, roads });
+  return checkNetworkEdit(next, network.roads, checkElevation);
+}
+
+export function setNetworkRoadGrade(network, index, grade) {
+  const road = network.roads[index];
+  if (!road || ![-1, 0, 1].includes(grade)) return { issue: "Choose a road and an elevation." };
+  if (roadGrade(road) === grade) return { network };
+  if (road.roundabout || road.laneA || road.laneB || network.roads.some(item =>
+    item.a === road.a && item.laneA?.neighbor === road.b || item.b === road.a && item.laneB?.neighbor === road.b ||
+    item.a === road.b && item.laneA?.neighbor === road.a || item.b === road.b && item.laneB?.neighbor === road.a)) {
+    return { issue: "Use a road with junction endpoints and no lane attachments." };
+  }
+  return connectNetworkRoad(network, { ...road, grade: grade || undefined }, index);
+}
+
+export function junctionCrossingAxes(network, id) {
+  const legs = junctionLegs(network, id);
+  if (legs.length !== 4 || legs.some(leg => leg.slip || roadGrade(leg.road) || leg.road.roundabout)) return [];
+  const sorted = [...legs].sort((a, b) => a.bearing - b.bearing);
+  const axes = [[sorted[0], sorted[2]], [sorted[1], sorted[3]]];
+  return axes.every(([a, b]) => Math.cos(a.bearing - b.bearing) < -.62) ? axes : [];
+}
+
+export function separateNetworkJunction(network, id, neighbor, grade) {
+  const axes = junctionCrossingAxes(network, id);
+  if (axes.length !== 2 || !axes.flat().some(leg => leg.neighbor === neighbor) || ![-1, 1].includes(grade)) {
+    return { issue: "Choose a four-way junction with two through roads." };
+  }
+  if (axes.some(([a, b]) => a.incoming !== b.outgoing || a.outgoing !== b.incoming || a.road.laneShift || b.road.laneShift)) {
+    return { issue: "Match the lane counts and center the segments on each through road." };
+  }
+  const nodes = networkNodes(network);
+  const legs = axes.flat();
+  let next = { ...network, nodes: network.nodes.filter(node => node.id !== id),
+    roads: network.roads.filter(road => !legs.some(leg => leg.road === road)) };
+  const joined = axes.map(([a, b]) => {
+    const from = networkRoadGeometry(a.road, nodes), to = networkRoadGeometry(b.road, nodes);
+    const chord = Math.hypot(from.start.x - from.end.x, from.start.y - from.end.y) +
+      Math.hypot(to.start.x - to.end.x, to.start.y - to.end.y);
+    const handle = (geometry, atA) => {
+      const tip = atA ? geometry.end : geometry.start;
+      const control = atA ? geometry.b : geometry.a;
+      const reach = chord / (3 * Math.hypot(tip.x - control.x, tip.y - control.y));
+      return [tip.x + (control.x - tip.x) * reach, tip.y + (control.y - tip.y) * reach];
+    };
+    next = remapJunctionNeighbor(next, a.neighbor, id, b.neighbor);
+    next = remapJunctionNeighbor(next, b.neighbor, id, a.neighbor);
+    return { a: a.neighbor, b: b.neighbor, forward: a.incoming, backward: a.outgoing, bend: 0,
+      controls: [...handle(from, a.atA), ...handle(to, b.atA)],
+      atA: a.atA ? a.road.atB : a.road.atA, atB: b.atA ? b.road.atB : b.road.atA,
+      ...(a.neighbor === neighbor || b.neighbor === neighbor ? { grade } : {}) };
+  });
+  if (!roadCrossings(joined[0], joined[1], nodes).length) return { issue: "Align both through roads to meet at the crossing." };
+  return applyRoadJoin(network, { ...next, roads: [...next.roads, ...joined] });
+}
+
+export function buildNetworkRoundabout(network, id, radius = 34) {
+  const nodes = networkNodes(network);
+  const center = nodes.get(id);
+  const legs = junctionLegs(network, id, nodes);
+  if (!center?.control || legs.length < 3 || legs.length > 5 || legs.some(leg => leg.slip || roadGrade(leg.road) || leg.road.roundabout)) {
+    return { issue: "Choose a surface junction with three to five approaches." };
+  }
+  if (![26, 34, 42].includes(radius)) return { issue: "Choose a roundabout size." };
+  const nextNodes = [...network.nodes];
+  const entries = [];
+  for (const leg of legs) {
+    const geometry = networkRoadGeometry(leg.road, nodes);
+    const samples = leg.atA ? geometry.samples : [...geometry.samples].reverse();
+    const distance = point => Math.hypot(point.x - center.x, point.y - center.y);
+    const index = samples.findIndex(point => distance(point) >= radius);
+    if (index < 1 || distance(samples.at(-1)) < radius + 17) return { issue: "Use a smaller roundabout or give the approaches more room." };
+    const before = samples[index - 1], after = samples[index];
+    const fraction = (radius - distance(before)) / (distance(after) - distance(before));
+    const angle = Math.atan2(before.y + (after.y - before.y) * fraction - center.y, before.x + (after.x - before.x) * fraction - center.x);
+    const point = { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
+    const issue = networkNodeIssue(point, network);
+    if (issue) return { issue };
+    const node = nextNetworkNode({ nodes: nextNodes }, point);
+    nextNodes.push(node);
+    const parameter = (index - 1 + fraction) / (samples.length - 1);
+    const parts = splitRoad(leg.road, nodes, [{ node, t: leg.atA ? parameter : 1 - parameter }]);
+    entries.push({ node, angle, leg, approach: parts[leg.atA ? 1 : 0] });
+  }
+  entries.sort((a, b) => b.angle - a.angle);
+  const usedLoops = roundaboutLoops(network);
+  let number = 1;
+  while (usedLoops.has(`r${number}`)) number++;
+  const ring = [];
+  for (const [index, a] of entries.entries()) {
+    const b = entries[(index + 1) % entries.length];
+    const arc = (a.angle - b.angle + 2 * Math.PI) % (2 * Math.PI);
+    if (arc < .42 || arc > Math.PI) return { issue: "Spread the approaches around the roundabout." };
+    const handle = 4 * radius / 3 * Math.tan(arc / 4);
+    ring.push({ a: a.node.id, b: b.node.id, forward: 1, backward: 0, bend: 0, roundabout: `r${number}`,
+      controls: [a.node.x + handle * Math.sin(a.angle), a.node.y - handle * Math.cos(a.angle),
+        b.node.x - handle * Math.sin(b.angle), b.node.y + handle * Math.cos(b.angle)] });
+  }
+  const byRoad = new Map(entries.map(entry => [entry.leg.road, entry.approach]));
+  let next = { ...network, nodes: nextNodes.filter(node => node !== center),
+    roads: [...network.roads.map(road => byRoad.get(road) ?? road), ...ring] };
+  for (const { leg, node } of entries) next = remapJunctionNeighbor(next, leg.neighbor, id, node.id);
+  return applyRoadJoin(network, next);
 }
 
 function validNetwork(network) {
   if (network == null) return true;
   if (!Array.isArray(network.nodes) || !Array.isArray(network.roads) || network.nodes.length > 60 || network.roads.length > 90) return false;
-  const ids = new Set(Object.keys(terminals));
+  if (network.map !== undefined && !Object.hasOwn(maps, network.map)) return false;
+  const ids = new Set(Object.keys(networkTerminals(network)));
   for (const node of network.nodes) {
     if (!node || !/^j\d+$/.test(node.id) || ids.has(node.id) ||
-        !Number.isFinite(node.x) || !Number.isFinite(node.y) || networkNodeIssue(node) || !["priority", "allway_stop", "traffic_light", "yield"].includes(node.control)) return false;
+        !Number.isFinite(node.x) || !Number.isFinite(node.y) || networkNodeIssue(node, network) || !["priority", "allway_stop", "traffic_light", "yield"].includes(node.control)) return false;
     ids.add(node.id);
   }
-  const validRoads = network.roads.every((road, index) => road && ids.has(road.a) && ids.has(road.b) &&
+  const validRoads = network.roads.every(road => road && ids.has(road.a) && ids.has(road.b) &&
     [road.forward, road.backward].every(count => Number.isInteger(count) && count >= 0 && count <= 4) &&
     road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
+    [-1, 0, 1].includes(roadGrade(road)) &&
+    (road.roundabout === undefined || /^r\d+$/.test(road.roundabout) && road.forward === 1 && road.backward === 0 && !roadGrade(road)) &&
     (road.laneShift === undefined || Number.isInteger(road.laneShift) && Math.abs(road.laneShift) <= maxLaneShift) &&
     (road.controls === undefined || Array.isArray(road.controls) && road.controls.length === 4 && road.controls.every(Number.isFinite)) &&
-    [road.atA, road.atB].every(rule => rule === undefined || ["default", "priority", "yield", "stop"].includes(rule)) &&
-    validLaneAnchor(road.laneA, road, true, network) && validLaneAnchor(road.laneB, road, false, network) &&
-    !networkRoadIssue(network, road, index));
-  return validRoads && network.nodes.every(node => {
+    [road.atA, road.atB].every(rule => rule === undefined || ["default", "priority", "yield", "stop"].includes(rule)));
+  return validRoads && network.roads.every((road, index) => validLaneAnchor(road.laneA, road, true, network) &&
+    validLaneAnchor(road.laneB, road, false, network) && !networkRoadIssue(network, road, index)) && [...roundaboutLoops(network).values()].every(roads => {
+    const following = new Map(roads.map(road => [road.a, road.b]));
+    if (roads.length < 3 || following.size !== roads.length) return false;
+    let entry = roads[0].a;
+    const visited = new Set();
+    while (following.has(entry) && !visited.has(entry)) {
+      visited.add(entry);
+      entry = following.get(entry);
+    }
+    return entry === roads[0].a && visited.size === roads.length;
+  }) && network.nodes.every(node => {
     const legs = new Map(junctionLegs(network, node.id).map(leg => [leg.neighbor, leg]));
     if (node.laneRules !== undefined && (!node.laneRules || typeof node.laneRules !== "object" || Array.isArray(node.laneRules) ||
       !Object.entries(node.laneRules).every(([key, rule]) => validIncomingRule(key, rule, legs)))) return false;

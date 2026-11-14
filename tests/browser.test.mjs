@@ -870,7 +870,7 @@ test("the level menu opens five playable starts, and Move releases the editor wi
       const click = label => page.getByRole("button", { name: label, exact: true }).tap();
       const levels = page.locator("#level-list button");
       assert.equal(await levels.count(), 5);
-      for (const [index, name] of ["School Pickup", "Four-Way Backup", "Short Merge", "Bus Bottleneck", "Cross-Town Rush"].entries()) {
+      for (const [index, name] of ["School Pickup", "Market Square", "Harbor Merge", "Station Bottleneck", "Cross-Town Rush"].entries()) {
         assert.ok((await levels.nth(index).textContent()).includes(name));
       }
       await page.screenshot({ path: `test-results/level-menu-${viewport.width}.png` });
@@ -910,11 +910,11 @@ test("the level menu opens five playable starts, and Move releases the editor wi
       assert.equal(await map.locator("[data-draft-surface]").count(), 0);
       assert.deepEqual(await save(), start);
       await page.screenshot({ path: `test-results/map-move-${viewport.width}.png` });
-      for (let index = 1; index < 5; index++) {
+      for (const [index, roads] of [[1, 4], [2, 5], [3, 6], [4, 8]]) {
         await click("Menu");
         await click("Choose level");
         await levels.nth(index).tap();
-        assert.ok(await map.locator("[data-pavement]").count() >= 7);
+        assert.equal(await map.locator("[data-pavement]").count(), roads);
       }
       await click("Menu");
       await click("Choose level");
@@ -931,6 +931,96 @@ test("the level menu opens five playable starts, and Move releases the editor wi
       assert.deepEqual(errors, []);
       await context.close();
     }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("build, compare, undo, and resume roundabouts and grade-separated roads on mobile", { timeout: 60000 }, async () => {
+  await waitForServer();
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+  try {
+    const context = await browser.newContext({ viewport: { width: 320, height: 658 }, isMobile: true, hasTouch: true });
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(5000);
+    const button = name => page.getByRole("button", { name, exact: true });
+    const tap = name => button(name).tap();
+    const enter = id => page.locator(`[data-level="${id}"]`).tap();
+    const map = page.locator("#map");
+    const save = id => page.evaluate(id => JSON.parse(localStorage.getItem(`traffic-manager.${id}.v2`)).network, id);
+    const edit = async () => {
+      await tap("Select");
+      await button("Junction 1").press("Enter");
+      await tap("Build structure");
+    };
+    const fits = selector => page.locator(selector).evaluate(node => {
+      const tray = node.closest(".editor-tray").getBoundingClientRect();
+      return [...node.querySelectorAll("button, select, summary")].every(control => {
+        if (!control.getClientRects().length) return true;
+        const bounds = control.getBoundingClientRect();
+        return bounds.left >= tray.left && bounds.right <= tray.right && bounds.bottom <= tray.bottom;
+      });
+    });
+    const mapTap = async (x, y) => {
+      const point = await map.evaluate((svg, [x, y]) => new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()).toJSON(), [x, y]);
+      await page.touchscreen.tap(point.x, point.y);
+    };
+    await page.goto(url);
+    await page.locator("#menu-offline").filter({ hasText: "Ready for offline play" }).waitFor();
+    await enter("four-way-backup");
+    await edit();
+    assert.ok(await fits(".structure-layout"));
+    await tap("Standard roundabout");
+    assert.equal((await save("four-way-backup")).roads.filter(road => road.roundabout).length, 4);
+    assert.equal(await map.locator("[data-roundabout]").count(), 1);
+    await tap("Undo");
+    assert.equal(await map.locator("[data-roundabout]").count(), 0);
+    await tap("Redo");
+    assert.equal(await map.locator("[data-roundabout]").count(), 1);
+    await page.screenshot({ path: "test-results/market-roundabout-320.png" });
+    await tap("Simulate");
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+    await tap("Results");
+    assert.equal(await page.locator(".report-outcome").textContent(), "Goal met.");
+    await tap("Menu");
+    await tap("Choose level");
+    await enter("cross-town-rush");
+    await edit();
+    await page.screenshot({ path: "test-results/cross-town-controls-320.png" });
+    await button("Overpass from West to East").tap();
+    assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade === 1).length, 1);
+    assert.equal(await map.locator('[data-road-level="1"] [data-pavement]').count(), 1);
+    await tap("Undo");
+    await edit();
+    await button("Underpass from North to South").tap();
+    assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade === -1).length, 1);
+    await context.setOffline(true);
+    await page.reload();
+    await enter("cross-town-rush");
+    assert.equal(await map.locator('[data-road-level="-1"] [data-pavement]').count(), 1);
+    await tap("Simulate");
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+    await page.locator("#scrub").fill("52");
+    const design = page.locator("#design-map");
+    const car = design.locator('[data-vehicle-level="-1"] .vehicle.car').first();
+    await car.waitFor();
+    assert.ok(Number(await car.locator("rect").nth(1).getAttribute("height")) > 3.5);
+    await page.screenshot({ path: "test-results/cross-town-underpass-320.png" });
+    await tap("Results");
+    assert.equal(await page.locator(".report-outcome").textContent(), "Goal met.");
+    await tap("Design");
+    await tap("Draw");
+    await tap("Straight");
+    await page.getByLabel("Road elevation").selectOption("1");
+    await mapTap(158, 387);
+    await mapTap(291, 387);
+    assert.ok(await fits(".draw-footer"));
+    await tap("Apply");
+    assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade === 1).length, 1,
+      await page.locator("#detail").textContent());
+    assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }

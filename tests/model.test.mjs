@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { baseline, connectNetworkRoad, curve, isLaneDrop, junctionMovements, mergeTaper, moveNetworkNode, moveRoadLaneAnchor, networkLaneSamples, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, removeNetworkRoad, roadCurveFromPull, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
-import { applyRoadJoin, commitRoadDraft, curveHandleControls, editNetworkCurve, freeformBendControls, junctionLanePose, junctionLegs, laneAnchoredCurve,
-  levelStart, levels, levelTrips, networkLaneWidth, previewRoadDraft, roadDraftControls, roadJoinDraft, roadSurfaceSamples, shiftNetworkRoad, tripTerminals } from "../model.mjs";
+import { applyRoadJoin, buildNetworkRoundabout, commitRoadDraft, curveHandleControls, editNetworkCurve, freeformBendControls, junctionLanePose, junctionLegs, laneAnchoredCurve,
+  levelStart, levels, levelTrips, networkLaneWidth, networkTerminals, previewRoadDraft, roadDraftControls, roadJoinDraft, roadSurfaceSamples,
+  roundaboutLoops, separateNetworkJunction, setNetworkRoadGrade, shiftNetworkRoad, tripTerminals } from "../model.mjs";
 
 test("a lane-bound curve keeps its preview shape and slides its handle along the lane", () => {
   const network = starterNetwork();
@@ -62,15 +63,59 @@ test("the five levels supply independent layouts and valid routes with fixed dem
   assert.equal(levels.length, 5);
   const starts = levels.map(level => levelStart(level.id));
   assert.equal(new Set(starts.map(start => JSON.stringify(start.network))).size, levels.length);
+  assert.equal(new Set(starts.map(({ network }) => JSON.stringify(Object.values(networkTerminals(network)).map(({ x, y }) => [x, y])))).size, levels.length);
   for (const [index, level] of levels.entries()) {
     const design = starts[index];
     assert.ok(validate(design), level.id);
     const trips = levelTrips(level.id, design);
     assert.deepEqual(trips, levelTrips(level.id, design));
-    assert.ok(trips.every(trip => tripTerminals(trip).every(Boolean)));
+    assert.ok(trips.every(trip => tripTerminals(trip).every(id => networkTerminals(design.network)[id])));
     assert.equal(new Set(trips.map(trip => trip.id)).size, trips.length);
     assert.deepEqual(design, levelStart(level.id));
   }
+});
+
+test("surface roads join at crossings while drawn bridges and tunnels keep their routes separate", () => {
+  const lanes = { forward: 1, backward: 1 };
+  const { network } = commitRoadDraft({ nodes: [], roads: [] }, [{ x: 45, y: 485 }, { x: 207, y: 485 }], lanes, []);
+  const points = [{ x: 120, y: 443 }, { x: 120, y: 527 }];
+  const atGrade = commitRoadDraft(network, points, lanes, []);
+  assert.equal(atGrade.network.roads.length, 4);
+  assert.ok(atGrade.network.nodes.some(node => Math.hypot(node.x - 120, node.y - 485) < .01));
+  for (const grade of [-1, 1]) {
+    const built = commitRoadDraft(network, points, lanes, [], grade);
+    assert.ok(built.network, built.issue);
+    assert.equal(built.network.roads.length, 2);
+    assert.equal(built.network.roads.at(-1).grade, grade);
+    assert.ok(validate({ ...baseline, network: built.network }));
+    const joined = setNetworkRoadGrade(built.network, 1, 0);
+    assert.ok(joined.network, joined.issue);
+    assert.equal(joined.network.roads.length, 4);
+    assert.match(commitRoadDraft(network, [{ x: 120, y: 483 }, points[1]], lanes, [], grade).issue, /ramps more room/);
+  }
+});
+
+test("a four-way crossing can separate either axis, and a roundabout forms one directed loop", () => {
+  const start = levelStart("cross-town-rush");
+  for (const [axis, grade] of [["j2", 1], ["j3", -1]]) {
+    const result = separateNetworkJunction(start.network, "j1", axis, grade);
+    assert.ok(result.network, result.issue);
+    assert.equal(result.network.map, start.network.map);
+    assert.equal(result.network.nodes.some(node => node.id === "j1"), false);
+    assert.equal(result.network.roads.length, start.network.roads.length - 2);
+    assert.equal(result.network.roads.filter(road => road.grade === grade).length, 1);
+    assert.ok(validate({ ...start, network: result.network }));
+  }
+  const market = levelStart("four-way-backup");
+  const built = buildNetworkRoundabout(market.network, "j1", 34);
+  assert.ok(built.network, built.issue);
+  const [ring] = roundaboutLoops(built.network).values();
+  assert.equal(ring.length, 4);
+  assert.ok(ring.every((road, index) => road.b === ring[(index + 1) % ring.length].a && road.forward === 1 && road.backward === 0));
+  assert.ok(validate({ ...market, network: JSON.parse(JSON.stringify(built.network)) }));
+  const erased = removeNetworkRoad(built.network, built.network.roads.indexOf(ring[0]));
+  assert.equal(roundaboutLoops(erased).size, 0);
+  assert.ok(validate({ ...market, network: erased }));
 });
 
 test("complex roads go through the break with a shared tangent and an independent end angle", () => {

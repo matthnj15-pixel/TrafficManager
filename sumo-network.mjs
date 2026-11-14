@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneAnchoredCurve, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodes, networkRoadGeometry, selectedLane, terminals, trafficShapeSamples, tripTerminals } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneAnchoredCurve, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodeElevation, networkNodes, networkRoadGeometry, networkTerminals, roadElevationProfile, roadGrade, roundaboutLoops, selectedLane, trafficShapeSamples, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -293,6 +293,7 @@ export function sumoInputs(request, layout) {
 
 function freeNetworkInputs(request, network) {
   const nodes = networkNodes(network);
+  const terminals = networkTerminals(network);
   const outgoing = new Map();
   const incoming = new Map();
   const edges = [], connections = [];
@@ -300,11 +301,12 @@ function freeNetworkInputs(request, network) {
   const explicitJunctions = new Set();
   const laneDrops = new Set(network.nodes.filter(node => isLaneDrop(network, node)).map(node => node.id));
   const usesApproachRules = node => node.control === "priority" || !node.control;
-  const shape = points => points.map(point => `${(point.x * request.scale).toFixed(4)},${(-point.y * request.scale).toFixed(4)}`).join(" ");
-  const addEdge = (id, from, to, points, count, speed, length, rule = "default", laneShapes) => {
+  const shape = points => points.map(point => [point.x * request.scale, -point.y * request.scale,
+    ...(point.z === undefined ? [] : [point.z])].map(value => value.toFixed(4)).join(",")).join(" ");
+  const addEdge = (id, from, to, points, count, speed, length, rule = "default", laneShapes, roundabout = false) => {
     if (!count) return;
     const control = usesApproachRules(nodes.get(to)) ? rule : "default";
-    const priority = { default: 2, priority: 3, yield: 1, stop: 1 }[control];
+    const priority = roundabout ? 4 : { default: 2, priority: 3, yield: 1, stop: 1 }[control];
     if (control !== "default") explicitJunctions.add(to);
     const edge = { id, from, to, count, length };
     if (!outgoing.has(from)) outgoing.set(from, []);
@@ -327,10 +329,15 @@ function freeNetworkInputs(request, network) {
     const geometry = networkRoadGeometry(road, nodes);
     const anchored = laneAnchoredCurve(road, network, nodes, geometry);
     const { speed, length } = anchored ?? geometry;
-    const points = trafficShapeSamples(geometry.samples);
+    const height = roadElevationProfile(network, road, geometry.length);
+    const elevations = samples => {
+      const points = trafficShapeSamples(samples);
+      return roadGrade(road) ? points.map(point => ({ ...point, z: height(point.length) })) : points;
+    };
+    const points = elevations(geometry.samples);
     const laneShapes = (forward, count) => Array.from({ length: count }, (_, lane) =>
-      trafficShapeSamples(networkLaneSamples(road, network, nodes, forward, lane, geometry)));
-    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward));
+      elevations(networkLaneSamples(road, network, nodes, forward, lane, geometry)));
+    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward), !!road.roundabout);
     addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA, laneShapes(false, road.backward));
   }
   for (const [id, arrivals] of incoming) {
@@ -365,7 +372,8 @@ function freeNetworkInputs(request, network) {
   // Search by incoming edge so routes respect one-way segments and exclude U-turns.
   const routeCache = new Map();
   function routeBetween(origin, destination) {
-    const first = outgoing.get(`${origin}-boundary`)[0];
+    const first = outgoing.get(`${origin}-boundary`)?.[0];
+    if (!first || !terminals[destination]) return;
     const pending = [{ edge: first, distance: 0, path: [first.id] }];
     const visited = new Set();
     while (pending.length) {
@@ -397,13 +405,20 @@ function freeNetworkInputs(request, network) {
       id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base", departLane: "best"
     }));
   }
+  const loops = [...roundaboutLoops(network).values()];
+  const entries = new Set(loops.flat().map(road => road.a));
   return {
-    "nodes.xml": wrap("nodes", [...nodes.values()].map(node => element("node", {
-      id: node.id, x: node.x * request.scale, y: -node.y * request.scale,
-      type: explicitJunctions.has(node.id) ? "priority" : laneDrops.has(node.id) ? "zipper" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
-      ...(explicitJunctions.has(node.id) ? { rightOfWay: "edgePriority" } : {})
-    }))),
-    "edges.xml": wrap("edges", edges),
+    "nodes.xml": wrap("nodes", [...nodes.values()].map(node => {
+      const z = networkNodeElevation(network, node.id);
+      const explicit = entries.has(node.id) || explicitJunctions.has(node.id);
+      return element("node", { id: node.id, x: node.x * request.scale, y: -node.y * request.scale,
+        ...(z ? { z } : {}),
+        type: explicit ? "priority" : laneDrops.has(node.id) ? "zipper" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
+        ...(explicit ? { rightOfWay: "edgePriority" } : {}) });
+    })),
+    "edges.xml": wrap("edges", [...edges, ...loops.map(roads => element("roundabout", {
+      edges: roads.map(road => `road-${network.roads.indexOf(road)}-f`).join(" ")
+    }))]),
     "connections.xml": wrap("connections", connections),
     "routes.xml": wrap("routes", routes)
   };
@@ -511,13 +526,15 @@ export function sumoArgs({ duration, step }, traceSignals = false) {
 // These are controlled SUMO XML outputs. Read only the numeric attributes
 // and identifiers needed by the comparison, including inside a worker.
 function queueZoneFor(lane, network) {
+  const terminals = networkTerminals(network);
   const segment = /^road-(\d+)-([fb])_/.exec(lane);
   if (segment && network) {
     const road = network.roads[Number(segment[1])];
     if (!road) return "Road junction";
     const [from, to] = segment[2] === "f" ? [road.a, road.b] : [road.b, road.a];
     const label = id => terminals[id]?.name ?? `Junction ${id.slice(1)}`;
-    return `${road.laneA || road.laneB ? "Slip lane · " : ""}${label(from)} → ${label(to)}`;
+    const structure = road.roundabout ? "Roundabout" : road.grade === 1 ? "Overpass" : road.grade === -1 ? "Underpass" : road.laneA || road.laneB ? "Slip lane" : "";
+    return `${structure ? `${structure} · ` : ""}${label(from)} → ${label(to)}`;
   }
   const junction = /^:(j\d+)_/.exec(lane);
   if (junction) return `Junction ${junction[1].slice(1)}`;
@@ -574,6 +591,7 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   const busDelay = averageDelay(trip => trip.kind === "bus");
   const crossDelay = averageDelay(trip => trip.origin === "cross");
   const finishedFrom = origin => reports.filter(report => Number(report.arrival) >= 0 && demand.get(report.id).origin === origin).length;
+  const northFinished = reports.filter(report => Number(report.arrival) >= 0 && tripTerminals(demand.get(report.id))[1] === "north").length;
   const slipEdges = new Set(["slip-road"]);
   layout.design.network?.roads.forEach((road, index) => {
     if (!road.laneA && !road.laneB) return;
@@ -583,6 +601,12 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   const slipTrips = new Set();
   let finished = 0, longestQueue = 0, peakFrame = 0;
   const frames = [];
+  const roadGrades = new Map();
+  layout.design.network?.roads.forEach((road, index) => {
+    if (roadGrade(road)) for (const [suffix, count] of [["f", road.forward], ["b", road.backward]]) {
+      for (let lane = 0; lane < count; lane++) roadGrades.set(`road-${index}-${suffix}_${lane}`, road.grade);
+    }
+  });
   const queueZonesByLane = new Map();
   const zoneForLane = lane => {
     if (!queueZonesByLane.has(lane)) queueZonesByLane.set(lane, queueZoneFor(lane, layout.design.network));
@@ -601,8 +625,9 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
       const reason = speed < 2.2 ? "Queued" : "";
       if (slipEdges.has(car.lane.slice(0, car.lane.lastIndexOf("_")))) slipTrips.add(Number(car.id));
       const zone = zoneForLane(car.lane);
+      const grade = roadGrades.get(car.lane) ?? (Math.abs(Number(car.z)) > .5 ? Math.sign(Number(car.z)) : 0);
       if (reason) queues.set(car.lane, (queues.get(car.lane) ?? 0) + length + 2);
-      markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, lane: car.lane, angle: +angle.toFixed(5),
+      markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, lane: car.lane, angle: +angle.toFixed(5), ...(grade ? { grade } : {}),
         x: +((Number(car.x) - Math.cos(angle) * length / 2) / request.scale).toFixed(4),
         y: +((-Number(car.y) - Math.sin(angle) * length / 2) / request.scale).toFixed(4) });
     }
@@ -621,7 +646,7 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   }
   if (frames.length !== Math.round(request.duration / request.step) + 1) throw new Error("SUMO returned an incomplete simulation.");
   return { design: layout.design, frames, signals: signalReplay(network, signalOutput, request.scale), results: { finished, waiting: request.trips.length - finished,
-    longestQueue, peakFrame, busDelay, crossDelay,
+    longestQueue, peakFrame, busDelay, crossDelay, northFinished,
     slipFinished: reports.filter(report => Number(report.arrival) >= 0 && slipTrips.has(Number(report.id))).length,
     unserved: request.trips.length - [...sumoInputs(request, layout)["routes.xml"].matchAll(/<vehicle /g)].length, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"), collisions: [...collisions.matchAll(/<collision\s/g)].length } };
 }

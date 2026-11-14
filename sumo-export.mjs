@@ -44,19 +44,21 @@ export function readSumoComparison(data, design, levelId) {
   const keys = Object.keys(baseline);
   const matches = (a, b) => a && keys.every(key => JSON.stringify(a[key]) === JSON.stringify(b[key]));
   const initial = levelId ? levelStart(levelId) : baseline;
+  const levelTripsCount = levelTrips(levelId, design).length;
   if (!matches(data.original?.design, initial) || !matches(data.edited?.design, normalizeDesign(design))) {
     throw new Error("SUMO returned results for a different road design.");
   }
   const nonnegative = value => Number.isFinite(value) && value >= 0;
   const validMarker = marker => marker && Number.isInteger(marker.id) && marker.id >= 0 &&
     ["car", "bus", "pickup"].includes(marker.kind) && [marker.x, marker.y, marker.angle].every(Number.isFinite) &&
+    (marker.grade === undefined || [-1, 1].includes(marker.grade)) &&
     nonnegative(marker.speed) && typeof marker.reason === "string" && typeof marker.zone === "string";
   for (const run of [data.original, data.edited]) {
-    if (!run.results || !["finished", "waiting", "longestQueue", "peakFrame", "busDelay", "crossDelay", "crossFinished", "pickupFinished", "slipFinished", "unserved", "collisions"].every(key => nonnegative(run.results[key])) ||
+    if (!run.results || !["finished", "waiting", "longestQueue", "peakFrame", "busDelay", "crossDelay", "crossFinished", "northFinished", "pickupFinished", "slipFinished", "unserved", "collisions"].every(key => nonnegative(run.results[key])) ||
       !Number.isInteger(run.results.peakFrame) || run.results.peakFrame > duration / step ||
       !Array.isArray(run.frames) || run.frames.length !== duration / step + 1 ||
       !run.frames.every(frame => frame && ["avenue", "avenue-yellow", "cross", "cross-yellow", "all-red"].includes(frame.phase) && typeof frame.queueZone === "string" && nonnegative(frame.finished) &&
-        nonnegative(frame.longestQueue) && Array.isArray(frame.markers) && frame.markers.length <= 128 &&
+        nonnegative(frame.longestQueue) && Array.isArray(frame.markers) && frame.markers.length <= levelTripsCount &&
         frame.markers.every(validMarker))) {
       throw new Error("SUMO returned incomplete results.");
     }
