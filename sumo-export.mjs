@@ -1,6 +1,6 @@
-import { scheduledTrips, baseline, curve, duration, mergeTaper, normalizeDesign, scale, schoolEntry, signalCycle, slipGeometry, step, validate, vehicleDimensions, world } from "./model.mjs";
+import { baseline, curve, duration, levelStart, levelTrips, mergeTaper, normalizeDesign, scale, schoolEntry, signalCycle, slipGeometry, step, validate, vehicleDimensions, world } from "./model.mjs";
 
-export function sumoRequest(design) {
+export function sumoRequest(design, levelId) {
   if (!validate(design)) throw new Error("Invalid corridor design.");
   const points = geometry => geometry.samples.map(({ x, y }) => [x, y]);
   const layout = input => {
@@ -26,23 +26,25 @@ export function sumoRequest(design) {
       })
     };
   };
-  const trips = scheduledTrips(design.road != null || design.network != null);
+  const initial = levelId ? levelStart(levelId) : baseline;
+  const trips = levelTrips(levelId, design);
   return {
     schema: "traffic-manager.sumo-request.v2", world, scale, step, duration,
     signalCycle,
     types: { car: vehicleDimensions("car"), bus: vehicleDimensions("bus"), pickup: vehicleDimensions("pickup") },
     trips,
-    original: layout(baseline), edited: layout(design)
+    original: layout(initial), edited: layout(design)
   };
 }
 
-export function readSumoComparison(data, design) {
+export function readSumoComparison(data, design, levelId) {
   if (data?.schema !== "traffic-manager.sumo-comparison.v2" || typeof data.version !== "string") {
     throw new Error("SUMO returned an invalid comparison.");
   }
   const keys = Object.keys(baseline);
   const matches = (a, b) => a && keys.every(key => JSON.stringify(a[key]) === JSON.stringify(b[key]));
-  if (!matches(data.original?.design, baseline) || !matches(data.edited?.design, normalizeDesign(design))) {
+  const initial = levelId ? levelStart(levelId) : baseline;
+  if (!matches(data.original?.design, initial) || !matches(data.edited?.design, normalizeDesign(design))) {
     throw new Error("SUMO returned results for a different road design.");
   }
   const nonnegative = value => Number.isFinite(value) && value >= 0;

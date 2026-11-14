@@ -10,6 +10,11 @@ import { after } from "node:test";
 const url = "http://127.0.0.1:4183";
 const server = spawn("python3", ["-m", "http.server", "4183", "--bind", "127.0.0.1"], { stdio: "ignore" });
 after(() => server.kill());
+const enterSchool = page => page.locator('[data-level="school-pickup"]').click();
+const reloadSchool = async page => {
+  await page.reload();
+  await enterSchool(page);
+};
 const waitForServer = async () => {
   for (let attempt = 0; attempt < 50; attempt++) {
     try {
@@ -39,7 +44,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         }
       }, baseline);
       await page.goto(url);
-      await page.reload();
+      await reloadSchool(page);
       assert.equal(await page.locator("#map text").filter({ hasText: /Alder Avenue/ }).count(), 0);
       const cdp = await context.newCDPSession(page);
       const clickLocator = locator => locator.click();
@@ -169,9 +174,9 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       await page.getByRole("button", { name: "Worst backup", exact: true }).waitFor();
       assert.match(await page.locator("#live").textContent(), /Alder Avenue|Cross street|Pickup loop|Merge lane|Slip lane|Junction/);
       await click("Menu");
-      await page.getByText("Ready for offline play", { exact: true }).waitFor();
+      await page.locator("#offline").filter({ hasText: "Ready for offline play" }).waitFor();
       await context.setOffline(true);
-      await page.reload();
+      await reloadSchool(page);
       assert.equal(await endHandle.getAttribute("aria-valuenow"), String(shorterEnd));
       await click("Draw slip lane");
       assert.equal(await slipEnd.getAttribute("aria-valuenow"), String(drawnEnd));
@@ -272,7 +277,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(design.road[1].bend, 1);
         await click("Test design");
         await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
-        await page.reload();
+        await reloadSchool(page);
         await click("Road Builder");
         assert.equal(await page.locator("[data-road-segment]").count(), 2);
         // Match the layout where both ramps attach to a widened middle segment.
@@ -287,7 +292,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
             ]
           }));
         });
-        await page.reload();
+        await reloadSchool(page);
         const dragToOuterLane = async (name, tool) => {
           await click(tool);
           const handle = page.getByRole("slider", { name, exact: true });
@@ -308,7 +313,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.ok(afterCamera[2] < beforeCamera[2]);
         assert.notEqual(afterCamera[1], beforeCamera[1]);
         await click("Expand design panel");
-        await page.reload();
+        await reloadSchool(page);
         await dragToOuterLane("Slip lane start", "Draw slip lane");
         await dragToOuterLane("Merge node", "Move node");
         await click("Apply");
@@ -391,7 +396,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
         await click("Results");
         assert.equal(await page.getByText("Trips with no route", { exact: true }).count(), 0);
-        await page.reload();
+        await reloadSchool(page);
         assert.equal(await page.locator("[data-free-node]").count(), 8);
         await click("Junction 2");
         await page.locator('[data-lane-port="in:west:0"]').press("Enter");
@@ -418,6 +423,7 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(url);
+    await enterSchool(page);
     const click = name => page.getByRole("button", { name, exact: true }).click();
     const toolbar = name => page.locator(".builder-tools").getByRole("button", { name, exact: true });
     const mapPoint = (x, y) => page.locator("#map").evaluate((map, [x, y]) =>
@@ -440,6 +446,7 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     };
     await page.getByRole("heading", { name: "Road Builder" }).waitFor();
     assert.equal(await page.locator(".tools").isVisible(), false);
+    await toolbar("Select").click();
     assert.equal(await page.getByRole("button", { name: "Adjust curve", exact: true }).count(), 0);
     await tap(270, 250);
     assert.equal(await page.locator(".segment-lanes svg").count(), 4);
@@ -460,12 +467,13 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     await segmentHandle.press("ArrowLeft");
     assert.equal(await segmentHandle.getAttribute("aria-valuenow"), "0");
     await click("Adjust curve");
-    const handle = '[data-curve-handle="0"] circle:last-child';
+    assert.equal(await page.getByRole("button", { name: "Free angles" }).getAttribute("aria-pressed"), "true");
+    const handle = '[data-curve-handle="0"] circle:nth-child(2)';
     const [hx, hy] = await position(handle);
     await drag(hx, hy, hx + 19, hy + 8);
     assert.ok((await position(handle))[0] > hx + 10);
     await page.screenshot({ path: "test-results/unified-curve.png" });
-    await click("Adjust curve");
+    await click("Done");
     assert.equal(await page.locator("[data-curve-handle]").count(), 0);
     await page.getByLabel("Segment options", { exact: true }).click();
     await click("Add node");
@@ -508,9 +516,9 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     assert.equal(oneWay.bend, 0);
     assert.equal(oneWay.controls, undefined);
     await click("Menu");
-    await page.getByText("Ready for offline play", { exact: true }).waitFor();
+    await page.locator("#offline").filter({ hasText: "Ready for offline play" }).waitFor();
     await context.setOffline(true);
-    await page.reload();
+    await reloadSchool(page);
     await click("Design");
     await click("Junction 1");
     assert.equal(await page.locator("[data-lane-port]").count(), 9);
@@ -565,6 +573,7 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(url);
+    await enterSchool(page);
     const click = name => page.getByRole("button", { name, exact: true }).click();
     const map = page.locator("#map");
     const toScreen = (x, y) => map.evaluate((svg, [x, y]) => {
@@ -582,6 +591,7 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     const touch = (type, point) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [point] : [] });
     const save = () => page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
     const branch = graph => graph.roads.find(item => item.laneA && item.laneB);
+    await click("Select");
     await click("Add node");
     await tap(270, 250);
     await click("Add node");
@@ -606,6 +616,7 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     await touch("touchMove", { x: down.x + 17, y: down.y + 15 });
     await page.screenshot({ path: "test-results/road-curve-gesture.png" });
     await touch("touchEnd");
+    const preview = await map.locator("[data-draft-surface]").getAttribute("d");
     await click("Apply");
     const authored = (await save()).network;
     const slip = branch(authored);
@@ -615,8 +626,19 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     assert.equal(slip.a, "j3");
     assert.equal(slip.b, "j4");
     assert.equal(slip.controls.length, 4);
+    const pavement = await map.locator("[data-pavement]").last().getAttribute("d");
+    assert.equal(pavement, preview);
     await click("Select");
     await road(`Road ${authored.roads.indexOf(slip) + 1}`).press("Enter");
+    await click("Adjust curve");
+    const join = page.getByRole("button", { name: "Slide entry join" });
+    const before = authored.nodes.find(node => node.id === slip.a);
+    await join.press("ArrowDown");
+    const moved = (await save()).network.nodes.find(node => node.id === slip.a);
+    assert.ok(moved.y > before.y);
+    assert.ok(Math.abs(moved.x - before.x) < .0001);
+    await page.screenshot({ path: "test-results/lane-join-controls.png" });
+    await click("Done");
     await page.getByLabel("Segment options", { exact: true }).click();
     await click("Move lane end");
     const handle = await center('[data-road-lane="j4:east:0"] circle:nth-child(2)');
@@ -628,7 +650,7 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     await touch("touchMove", await toScreen(...receiving));
     await touch("touchEnd");
     assert.deepEqual(branch((await save()).network).laneB, { neighbor: "east", lane: 1 });
-    await page.reload();
+    await reloadSchool(page);
     await click("Simulate");
     await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
     const lamps = page.locator("#design-map .replay-signal circle");
@@ -658,6 +680,7 @@ test("the fixed tray stages each drawing shape and clears the map in two taps", 
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(url);
+      await enterSchool(page);
       const button = name => page.getByRole("button", { name, exact: true });
       const tap = name => button(name).tap();
       const map = page.locator("#map");
@@ -683,6 +706,7 @@ test("the fixed tray stages each drawing shape and clears the map in two taps", 
       assert.equal(title.x, menu.x);
       assert.ok(menu.y >= title.y + title.height);
       await tap("Menu");
+      await tap("Select");
       await mapTap(270, 245);
       await tap("Move segment");
       const segment = page.getByRole("slider", { name: "Segment lane position" });
@@ -759,6 +783,86 @@ test("the fixed tray stages each drawing shape and clears the map in two taps", 
       await tap("Reset default");
       assert.ok(await map.locator("[data-lane-link]").count() > 0);
       await page.screenshot({ path: `test-results/intersection-options-${viewport.width}.png` });
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("the level menu opens five playable starts, and Move releases the editor without changing the network", { timeout: 35000 }, async () => {
+  await waitForServer();
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+  try {
+    for (const viewport of [{ width: 390, height: 844 }, { width: 669, height: 951 }]) {
+      const context = await browser.newContext({ viewport, isMobile: true, hasTouch: true });
+      const page = await context.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.setDefaultTimeout(5000);
+      await page.goto(url);
+      const click = label => page.getByRole("button", { name: label, exact: true }).tap();
+      const levels = page.locator("#level-list button");
+      assert.equal(await levels.count(), 5);
+      for (const [index, name] of ["School Pickup", "Four-Way Backup", "Short Merge", "Bus Bottleneck", "Cross-Town Rush"].entries()) {
+        assert.ok((await levels.nth(index).textContent()).includes(name));
+      }
+      await page.screenshot({ path: `test-results/level-menu-${viewport.width}.png` });
+      await levels.nth(0).tap();
+      const map = page.locator("#map");
+      const save = () => page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")).network);
+      const start = await save();
+      const mapPoint = (x, y) => map.evaluate((svg, [x, y]) =>
+        new DOMPoint(x, y).matrixTransform(svg.getScreenCTM()).toJSON(), [x, y]);
+      const touchMap = async (x, y) => {
+        const p = await mapPoint(x, y);
+        await page.touchscreen.tap(p.x, p.y);
+      };
+      const move = page.getByRole("button", { name: "Move", exact: true });
+      assert.equal(await move.getAttribute("aria-pressed"), "true");
+      assert.equal(await map.locator("[data-free-node], [data-free-road]").count(), 0);
+      await click("Select");
+      await touchMap(270, 250);
+      await click("Adjust curve");
+      await click("Move");
+      assert.equal(await map.locator("[data-curve-handle], [data-free-node], [data-free-road]").count(), 0);
+      const point = await mapPoint(270, 250);
+      const viewBox = await map.getAttribute("viewBox");
+      const cdp = await context.newCDPSession(page);
+      const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      await touch("touchStart", [{ x: point.x, y: point.y }]);
+      await touch("touchMove", [{ x: point.x + 48, y: point.y + 24 }]);
+      await touch("touchEnd", []);
+      assert.notEqual(await map.getAttribute("viewBox"), viewBox);
+      assert.deepEqual(await save(), start);
+      await click("Map overview");
+      await click("Draw");
+      await touchMap(70, 480);
+      await touchMap(140, 480);
+      assert.ok(await map.locator("[data-draft-surface]").count());
+      await click("Move");
+      assert.equal(await map.locator("[data-draft-surface]").count(), 0);
+      assert.deepEqual(await save(), start);
+      await page.screenshot({ path: `test-results/map-move-${viewport.width}.png` });
+      for (let index = 1; index < 5; index++) {
+        await click("Menu");
+        await click("Choose level");
+        await levels.nth(index).tap();
+        assert.ok(await map.locator("[data-pavement]").count() >= 7);
+      }
+      await click("Menu");
+      await click("Choose level");
+      await levels.nth(0).tap();
+      assert.deepEqual(await save(), start);
+      if (viewport.width === 390) {
+        await click("Simulate");
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+        await click("Results");
+        const data = await page.locator(".metrics tr").filter({ hasText: "Pickup trips" }).locator("td").allTextContents();
+        assert.equal(data[0], data[1]);
+        assert.ok(await page.locator(".report-outcome").textContent().then(text => !text.includes("Goal met")));
+      }
       assert.deepEqual(errors, []);
       await context.close();
     }

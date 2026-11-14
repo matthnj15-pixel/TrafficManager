@@ -8,10 +8,21 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg">
   <link rel="stylesheet" href="./styles.css">
-  <title>Traffic Manager · School Pickup</title>
+  <title>Traffic Manager</title>
 </head>
 <body>
 <main class="game">
+  <section class="level-menu" id="level-menu" aria-labelledby="level-heading" hidden>
+    <div class="level-menu-inner">
+      <div class="level-menu-title">
+        <img src="./icon.svg" alt="" width="68" height="68">
+        <div><h1 id="level-heading" tabindex="-1">Traffic Manager</h1><p>Choose a road network to fix.</p></div>
+      </div>
+      <ol class="level-list" id="level-list"></ol>
+      <small id="menu-offline" role="status">Preparing offline play…</small>
+    </div>
+  </section>
+  <div id="playfield" hidden>
   <svg id="map" viewBox="0 0 500 700" preserveAspectRatio="xMidYMid meet" aria-label="School pickup road map"></svg>
   <section id="comparison" class="comparison" aria-label="Simulation comparison" hidden>
     <figure class="comparison-panel" data-map-version="original">
@@ -34,9 +45,10 @@
     </nav>
   </header>
   <div id="menu-panel" class="glass menu-panel" hidden>
-    <strong>School Pickup</strong>
+    <strong id="scenario-name">School Pickup</strong>
     <span id="offline">Preparing offline play…</span>
     <span id="subtitle" role="status" hidden></span>
+    <button data-action="choose-level" type="button">Choose level</button>
     <button data-action="new-builder" type="button" hidden>Try new Road Builder</button>
     <button id="reset" type="button">Restore original design</button>
   </div>
@@ -50,6 +62,7 @@
     <button type="button" data-tool="signal" aria-label="Signal timing"></button>
   </aside>
   <section id="inspector" class="glass inspector" aria-label="Design controls"></section>
+  </div>
 </main>
 <script type="module" src="./app.mjs"></script>
 </body>

@@ -4,9 +4,52 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
-import { configureJunctions, netconvertArgs, sumoArgs, sumoInputs } from "../sumo-network.mjs";
+import { avenueSegments, baseline, connectNetworkRoad, duration, junctionMovements, levels, levelStart, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
+import { configureJunctions, netconvertArgs, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
+
+test("each level starts below an achievable goal with the same demand", async () => {
+  const fixes = [
+    ({ nodes, roads }) => { nodes[1].control = "traffic_light"; roads[0].backward = roads[3].backward = 2; },
+    ({ nodes }) => { nodes[0].control = "traffic_light"; },
+    ({ roads }) => { roads[0].backward = roads[3].backward = 2; },
+    ({ roads }) => { roads[5].atB = undefined; },
+    ({ roads }) => { const bypass = roads.at(-1); bypass.forward = 0; bypass.backward = 1; }
+  ];
+  const dir = await mkdtemp(join(tmpdir(), "traffic-level-goals-"));
+  const command = (program, args) => {
+    const result = spawnSync(program, args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  const run = async (request, layout) => {
+    for (const [name, contents] of Object.entries(sumoInputs(request, layout))) await writeFile(join(dir, name), contents);
+    command("netconvert", netconvertArgs);
+    const net = configureJunctions(await readFile(join(dir, "corridor.net.xml"), "utf8"), layout.design, request.signalCycle);
+    await writeFile(join(dir, "corridor.net.xml"), net);
+    const signal = signalOutputRequest(net);
+    if (signal) await writeFile(join(dir, "signals.add.xml"), signal);
+    command("sumo", sumoArgs(request, !!signal));
+    const [trace, trips, collisions] = await Promise.all(["trace.xml", "trips.xml", "collisions.xml"].map(name => readFile(join(dir, name), "utf8")));
+    return sumoResult(request, layout, trace, trips, collisions, net).results;
+  };
+  try {
+    for (const [index, level] of levels.entries()) {
+      const design = levelStart(level.id);
+      fixes[index](design.network);
+      const request = sumoRequest(design, level.id);
+      const before = await run(request, request.original);
+      const after = await run(request, request.edited);
+      assert.equal(before.unserved, 0, level.id);
+      assert.equal(after.unserved, 0, level.id);
+      assert.equal(after.collisions, 0, level.id);
+      assert.ok(after.finished >= before.finished, level.id);
+      const delta = after[level.metric] - before[level.metric];
+      assert.ok(level.metric === "busDelay" ? delta < -1 : delta > 0, level.id);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("SUMO receives shifted lane shapes and obeys lane-wide and intersection-wide rules", async () => {
   const dir = await mkdtemp(join(tmpdir(), "traffic-junction-rules-"));

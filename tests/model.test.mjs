@@ -1,7 +1,77 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { baseline, connectNetworkRoad, curve, isLaneDrop, junctionMovements, mergeTaper, moveNetworkNode, moveRoadLaneAnchor, networkLaneSamples, networkNodes, networkRoadGeometry, nextNetworkNode, normalizeDesign, pointOnCurve, removeNetworkRoad, roadCurveFromPull, splitNetworkRoad, starterNetwork, validate } from "../model.mjs";
-import { commitRoadDraft, freeformBendControls, junctionLegs, networkLaneWidth, roadDraftControls, shiftNetworkRoad } from "../model.mjs";
+import { applyRoadJoin, commitRoadDraft, curveHandleControls, editNetworkCurve, freeformBendControls, junctionLanePose, junctionLegs, laneAnchoredCurve,
+  levelStart, levels, levelTrips, networkLaneWidth, previewRoadDraft, roadDraftControls, roadJoinDraft, roadSurfaceSamples, shiftNetworkRoad, tripTerminals } from "../model.mjs";
+
+test("a lane-bound curve keeps its preview shape and slides its handle along the lane", () => {
+  const network = starterNetwork();
+  const fork = { id: "j3", x: 270, y: 250, control: "priority" };
+  const merge = { id: "j4", x: 370, y: 180, control: "priority" };
+  const first = splitNetworkRoad(network, 3, fork, 70 / 147).network;
+  const second = splitNetworkRoad(first, 2, merge, 100 / 200).network;
+  second.roads.find(road => road.a === "j3" && road.b === "j2").backward = 2;
+  const nodes = networkNodes(second);
+  const incoming = junctionLegs(second, fork.id).find(leg => leg.neighbor === "j2");
+  const outgoing = junctionLegs(second, merge.id).find(leg => leg.neighbor === "east");
+  const points = [
+    { id: fork.id, ...junctionLanePose(incoming, nodes, "incoming", 0, 22), anchor: { neighbor: "j2", lane: 0 } },
+    { id: merge.id, ...junctionLanePose(outgoing, nodes, "outgoing", 0, 22), anchor: { neighbor: "east", lane: 0 } }
+  ];
+  const controls = [[270, 218, 325, 180]];
+  const preview = previewRoadDraft(second, points, { forward: 1, backward: 1 }, controls);
+  const result = commitRoadDraft(second, points, { forward: 1, backward: 1 }, controls);
+  assert.ok(result.network, result.issue);
+  const graph = result.network, built = graph.roads.at(-1), builtNodes = networkNodes(graph);
+  const original = laneAnchoredCurve(built, graph, builtNodes);
+  const before = roadSurfaceSamples(preview.roads[0], preview.graph, preview.nodes);
+  assert.deepEqual(roadSurfaceSamples(built, graph, builtNodes), before);
+  const entry = junctionLanePose(incoming, nodes, "incoming", 0);
+  const exit = junctionLanePose(outgoing, nodes, "outgoing", 0);
+  assert.equal(original.start.angle, entry.angle);
+  assert.equal(original.end.angle, exit.angle);
+  const nextControls = curveHandleControls(built, graph, builtNodes, 0, { x: original.a.x + 16, y: original.a.y - 7 });
+  const adjusted = editNetworkCurve(graph, graph.roads.length - 1, nextControls);
+  assert.ok(adjusted.network, adjusted.issue);
+  const next = laneAnchoredCurve(adjusted.network.roads.at(-1), adjusted.network, networkNodes(adjusted.network));
+  assert.equal(next.start.angle, original.start.angle);
+  assert.equal(next.end.angle, original.end.angle);
+  assert.notEqual(next.a.y, original.a.y);
+  assert.ok(Math.abs(next.a.x - original.a.x) < .0001);
+  const slide = roadJoinDraft(graph, graph.roads.length - 1, "a", { x: 285, y: 270 });
+  const slid = applyRoadJoin(graph, slide);
+  assert.ok(slid.network, slid.issue);
+  const moved = networkNodes(slid.network).get(fork.id);
+  assert.ok(Math.abs(moved.x - fork.x) < .0001);
+  assert.ok(Math.abs(moved.y - 270) < 1);
+  assert.deepEqual(slid.network.roads.at(-1).laneA, built.laneA);
+  assert.equal(networkNodes(graph).get(fork.id).y, 250);
+});
+
+test("the fixed-width road surface rejects a bend where the inside lanes would fold over", () => {
+  const points = [{ x: 70, y: 495 }, { x: 115, y: 453 }];
+  const controls = [[100, 495, 114.5, 453.2]];
+  const network = { nodes: [], roads: [] };
+  const lanes = { forward: 3, backward: 3 };
+  assert.match(previewRoadDraft(network, points, lanes, controls).issue, /too tight/);
+  assert.match(commitRoadDraft(network, points, lanes, controls).issue, /too tight/);
+  assert.deepEqual(network, { nodes: [], roads: [] });
+});
+
+test("the five levels supply independent layouts and valid routes with fixed demand", () => {
+  assert.equal(levels.length, 5);
+  const starts = levels.map(level => levelStart(level.id));
+  assert.equal(new Set(starts.map(start => JSON.stringify(start.network))).size, levels.length);
+  for (const [index, level] of levels.entries()) {
+    const design = starts[index];
+    assert.ok(validate(design), level.id);
+    const trips = levelTrips(level.id, design);
+    assert.deepEqual(trips, levelTrips(level.id, design));
+    assert.ok(trips.every(trip => tripTerminals(trip).every(Boolean)));
+    assert.equal(new Set(trips.map(trip => trip.id)).size, trips.length);
+    assert.deepEqual(design, levelStart(level.id));
+  }
+});
 
 test("complex roads go through the break with a shared tangent and an independent end angle", () => {
   const layouts = [

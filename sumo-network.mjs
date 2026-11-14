@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodes, networkRoadGeometry, selectedLane, terminals, tripTerminals } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneAnchoredCurve, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodes, networkRoadGeometry, selectedLane, terminals, trafficShapeSamples, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -325,10 +325,11 @@ function freeNetworkInputs(request, network) {
   }
   for (const [index, road] of network.roads.entries()) {
     const geometry = networkRoadGeometry(road, nodes);
-    const { samples, speed, length } = geometry;
-    const points = samples.filter((_, i) => i % 5 === 0);
-    const laneShapes = (forward, count) => count && (road.laneShift || forward && (road.laneA || road.laneB) || laneDropTaper(network, road, nodes, forward).length) ?
-      Array.from({ length: count }, (_, lane) => networkLaneSamples(road, network, nodes, forward, lane, geometry)) : undefined;
+    const anchored = laneAnchoredCurve(road, network, nodes, geometry);
+    const { speed, length } = anchored ?? geometry;
+    const points = trafficShapeSamples(geometry.samples);
+    const laneShapes = (forward, count) => Array.from({ length: count }, (_, lane) =>
+      trafficShapeSamples(networkLaneSamples(road, network, nodes, forward, lane, geometry)));
     addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward));
     addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA, laneShapes(false, road.backward));
   }
@@ -569,7 +570,7 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   const demand = new Map(request.trips.map(trip => [String(trip.id), trip]));
   const delay = report => Math.max(0, Number(report.timeLoss)) + Math.max(0, Number(report.departDelay));
   const averageDelay = matches => reports.reduce((sum, report) =>
-    sum + (matches(demand.get(report.id)) ? delay(report) : 0), 0) / request.trips.filter(matches).length;
+    sum + (matches(demand.get(report.id)) ? delay(report) : 0), 0) / Math.max(1, request.trips.filter(matches).length);
   const busDelay = averageDelay(trip => trip.kind === "bus");
   const crossDelay = averageDelay(trip => trip.origin === "cross");
   const finishedFrom = origin => reports.filter(report => Number(report.arrival) >= 0 && demand.get(report.id).origin === origin).length;

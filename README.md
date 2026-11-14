@@ -1,6 +1,6 @@
 # Traffic Manager
 
-School Pickup is a first playable traffic engineering scenario. Shorten the pickup queue without delaying buses or leaving more trips unfinished.
+Traffic Manager is a road-design puzzle with five playable traffic problems on the Alder Avenue map.
 
 ## Play on iPhone
 
@@ -14,7 +14,15 @@ For initial setup, select **Settings → Pages → Source → GitHub Actions** i
 
 [Gameplay catalog](GAMEPLAY.md)
 
-Fresh games open in **Design**. Use **Draw** to preview a straight, curved, complex, or freeform road and **Apply** to build it. In **Select**, tap a road to edit its lanes and alignment, or tap a junction to set traffic rules and allowed movements. Green lane handles let you continue an extra lane into a one-way slip road. Open **Simulate** to run the design in SUMO and compare it with the original. **Results** shows queues, delays, and completed trips.
+Choose a level from the main menu. Each level has its own starting network, demand, and saved design. Use **Move** to clear the active tool and pan from anywhere on the map. In **Draw**, preview a straight, curved, complex, or freeform road and tap **Apply** to build it. In **Select**, tap a road to edit its lanes and alignment, or tap a junction to set traffic rules and allowed movements. Open **Simulate** to replay the traffic against the original level layout. **Results** shows your objective, queues, delays, and completed trips.
+
+| Level | Starting problem | Objective |
+| --- | --- | --- |
+| School Pickup | A stop sign backs up the pickup exit | Complete more pickup trips |
+| Four-Way Backup | An all-way stop meters every approach | Complete more trips |
+| Short Merge | Two northbound lanes narrow before the signal | Complete more trips |
+| Bus Bottleneck | A tight bend and stop sign delay the school buses | Reduce bus delay |
+| Cross-Town Rush | Two signals queue traffic and the bypass runs the wrong way | Complete more trips |
 
 ## Original corridor saves
 
@@ -31,7 +39,7 @@ Existing corridor saves retain the original controls below. Use **Menu → Try n
 - **Test design** applies edits and opens **Simulate**. Simulate and Results run Eclipse SUMO 1.28.0 in a browser worker. The two layouts share demand and simulation time. **Worst backup** jumps to your largest measured queue and highlights its road.
 - **Results** shows changes in queue length, bus and cross-street delay, completed trips, and collisions. The objective is to shorten the queue while protecting service on both roads.
 
-The 210-second scenario uses a fixed 116-trip schedule and 0.2-second simulation steps. Queue length counts near-stopped vehicles and nominal gaps on the longest queued lane. At the end of the run, the difference between scheduled trips and completed trips is the number still unfinished.
+Each 210-second run uses the level's fixed trip schedule and 0.2-second simulation steps. Queue length counts near-stopped vehicles and nominal gaps on the longest queued lane. At the end of the run, the difference between scheduled trips and completed trips is the number still unfinished.
 
 ## Build and verify
 
