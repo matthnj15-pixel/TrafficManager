@@ -9,7 +9,12 @@ files.push("./sumo-network.mjs", "./sumo-worker.mjs",
 const shell = new Set(files.map(file => new URL(file, self.registration.scope).pathname));
 
 self.addEventListener("install", event => {
-  event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(files)));
+  event.waitUntil((async () => {
+    const cache = await caches.open(cacheName);
+    // A new worker can arrive before the browser's HTTP cache expires.
+    await cache.addAll(files.map(file => new Request(new URL(file, self.registration.scope), { cache: "reload" })));
+    await self.skipWaiting();
+  })());
 });
 self.addEventListener("activate", event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(

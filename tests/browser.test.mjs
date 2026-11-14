@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { sumoRequest } from "../sumo-export.mjs";
@@ -15,6 +17,69 @@ const reloadSchool = async page => {
   await page.reload();
   await enterSchool(page);
 };
+
+test("an open playtest updates its offline files and reloads without losing a save", { timeout: 45000 }, async () => {
+  const serviceWorker = await readFile("sw.js", "utf8");
+  const home = await readFile("index.html", "utf8");
+  let release = "first";
+  const mime = { html: "text/html", mjs: "text/javascript", js: "text/javascript", css: "text/css", wasm: "application/wasm" };
+  const server = createServer(async (req, res) => {
+    const path = new URL(req.url, "http://localhost").pathname.slice(1) || "index.html";
+    try {
+      // Keep old HTML in the HTTP cache to exercise the worker's fresh install.
+      const body = path === "sw.js" ? serviceWorker.replace('"local-2"', '"' + release + '"') :
+        path === "index.html" ? home.replace("<title>Traffic Manager</title>", "<title>" + release + "</title>") : await readFile(path);
+      res.writeHead(200, { "Content-Type": mime[path.split(".").at(-1)] ?? "application/octet-stream",
+        "Cache-Control": path === "sw.js" ? "no-cache" : "max-age=3600" });
+      res.end(body);
+    } catch {
+      res.writeHead(404).end();
+    }
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    page.setDefaultTimeout(6000);
+    const base = "http://127.0.0.1:" + server.address().port;
+    let updateSignal;
+    const updateDetected = () => page.evaluate(() => navigator.serviceWorker.getRegistration().then(registration => registration.update()));
+    await page.goto(base);
+    await page.locator("#menu-offline").filter({ hasText: "Ready for offline play" }).waitFor();
+    assert.equal(await page.title(), "first");
+    await enterSchool(page);
+    const readSave = () => page.evaluate(() => JSON.parse(localStorage.getItem("traffic-manager.school-pickup.v1")));
+    await page.getByRole("button", { name: "Select", exact: true }).click();
+    await page.getByRole("button", { name: "Road 4", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Add lane right", exact: true }).click();
+    const saved = await readSave();
+    assert.equal(saved.network.roads[3].forward, 2);
+    await page.getByRole("button", { name: "Draw", exact: true }).click();
+    await page.getByRole("button", { name: "Pickup loop connection" }).focus();
+    await page.keyboard.press("Enter");
+    release = "second";
+    await updateDetected();
+    const reload = page.getByRole("button", { name: "Reload game" });
+    await reload.waitFor();
+    page.once("dialog", dialog => { updateSignal = dialog.message(); return dialog.dismiss(); });
+    await reload.click();
+    assert.match(updateSignal, /unfinished road edit/);
+    assert.equal(await page.title(), "first");
+    await page.getByRole("button", { name: "Move", exact: true }).click();
+    await reload.click();
+    await page.waitForFunction(() => document.title === "second");
+    await context.setOffline(true);
+    await page.reload();
+    assert.equal(await page.title(), "second");
+    await enterSchool(page);
+    assert.deepEqual(await readSave(), saved);
+  } finally {
+    await browser?.close();
+    server.close();
+  }
+});
 const waitForServer = async () => {
   for (let attempt = 0; attempt < 50; attempt++) {
     try {

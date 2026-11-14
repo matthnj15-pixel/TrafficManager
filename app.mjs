@@ -2904,13 +2904,31 @@ $("#reset").addEventListener("click", () => {
 render();
 if ("serviceWorker" in navigator) {
   const workerUrl = new URL("./sw.js", import.meta.url).href;
+  let pageWorker = navigator.serviceWorker.controller;
   const updateOfflineStatus = () => {
     if (navigator.serviceWorker.controller?.scriptURL === workerUrl) {
       $("#offline").textContent = "Ready for offline play";
       $("#menu-offline").textContent = "Ready for offline play";
     }
   };
-  navigator.serviceWorker.addEventListener("controllerchange", updateOfflineStatus);
-  navigator.serviceWorker.register(workerUrl).then(updateOfflineStatus)
+  $("#reload-update").addEventListener("click", () => {
+    if ((changed() || drawing.points.length) && !confirm("Reload and discard your unfinished road edit?")) return;
+    location.reload();
+  });
+  $("#dismiss-update").addEventListener("click", () => { $("#update-ready").hidden = true; });
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    updateOfflineStatus();
+    const controller = navigator.serviceWorker.controller;
+    if (pageWorker?.scriptURL === workerUrl && controller?.scriptURL === workerUrl && controller !== pageWorker) {
+      $("#update-ready").hidden = false;
+    }
+    if (!pageWorker) pageWorker = controller;
+  });
+  navigator.serviceWorker.register(workerUrl, { updateViaCache: "none" }).then(registration => {
+    updateOfflineStatus();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && navigator.onLine) registration.update().catch(() => {});
+    });
+  })
     .catch(() => { $("#offline").textContent = $("#menu-offline").textContent = "Offline setup unavailable"; });
 } else $("#offline").textContent = $("#menu-offline").textContent = "Offline setup unavailable";

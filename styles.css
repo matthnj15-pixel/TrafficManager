@@ -36,6 +36,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 
 #playfield { position: absolute; inset: 0; }
+.update-ready {
+  position: absolute;
+  z-index: 6;
+  top: calc(max(10px, env(safe-area-inset-top)) + 56px);
+  right: var(--safe-right);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 5px 5px 10px;
+  border-radius: 12px;
+  font-size: .84rem;
+}
+.update-ready button { min-height: 44px; padding: 0 9px; border-radius: 8px; background: #bcebdc; color: #16322d; font-weight: 700; }
+.update-ready #dismiss-update { min-width: 44px; padding: 0; color: inherit; background: var(--control); font-size: 1.25rem; }
 .level-menu {
   position: absolute;
   inset: 0;
