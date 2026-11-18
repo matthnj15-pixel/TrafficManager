@@ -148,6 +148,9 @@ test('separation preserves disabled through movements and erased ramps release w
   const node = graph.nodes[0];
   const movements = junctionMovements(graph,node).filter(m => !(m.from === 'west' && m.to === 'east' && m.fromLane === 0));
   assert.match(separateNetworkJunction({...graph,nodes:[{...node,movements}]},'j1','west',1).issue,/restricts a through lane/);
+  assert.match(separateNetworkJunction({...graph,nodes:[{...node,laneRules:{'west:0':'stop'}}]},'j1','west',1).issue,/restricts a through lane/);
+  const crossTurnsOnly = junctionMovements(graph,node).filter(m => !(m.from === 'west' && m.to === 'north'));
+  assert.ok(separateNetworkJunction({...graph,nodes:[{...node,movements:crossTurnsOnly}]},'j1','west',1).network);
   const built = apply(graph,{start:target('west','j1',.55),end:target('j1','north',.45)});
   const wider = resizeRoadLanes(built.network,0,3,2);
   assert.ok(wider.network,wider.issue);

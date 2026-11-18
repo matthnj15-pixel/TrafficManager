@@ -1523,9 +1523,11 @@ export function separateNetworkJunction(network, id, neighbor, grade) {
   }
   const nodes = networkNodes(network);
   const crossing = nodes.get(id);
-  if (crossing.movements && axes.some(([a,b]) => [[a,b],[b,a]].some(([from,to]) =>
-      Array.from({length:from.incoming},(_,lane) => lane).some(lane => !crossing.movements.some(move =>
-        move.from === from.neighbor && move.to === to.neighbor && move.fromLane === lane && move.toLane === lane))))) {
+  const throughMoves = junctionMovements(network,crossing);
+  if ((crossing.movements || crossing.laneRules) && axes.some(([a,b]) => [[a,b],[b,a]].some(([from,to]) =>
+      Array.from({length:from.incoming},(_,lane) => lane).some(lane => !throughMoves.some(move =>
+        move.from === from.neighbor && move.to === to.neighbor && move.fromLane === lane && move.toLane === lane &&
+        move.rule !== 'stop' && move.rule !== 'yield'))))) {
     return { issue: 'This crossing restricts a through lane. Edit its lane movements before separating the roads.' };
   }
   const legs = axes.flat();
