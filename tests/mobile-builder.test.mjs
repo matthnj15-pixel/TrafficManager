@@ -117,6 +117,15 @@ async function widenBetweenRamps(qa, design, loopId) {
   return widened;
 }
 
+function assertSameAttachment(actual, expected) {
+  assert.deepEqual(actual.host, expected.host);
+  assert.equal(actual.forward, expected.forward);
+  assert.equal(actual.lane, expected.lane);
+  assert.ok(Math.abs(actual.t - expected.t) < 1e-6, 'The unchanged end keeps its station');
+  assert.ok(Math.hypot(actual.x - expected.x, actual.y - expected.y) < .001, 'The unchanged end keeps its position');
+  assert.ok(Math.abs(actual.angle - expected.angle) < .001, 'The unchanged end keeps its tangent');
+}
+
 async function moveLoopMerge(qa, design, loopId) {
   const { network } = design;
   const nodes = model.networkNodes(network);
@@ -147,9 +156,13 @@ async function moveLoopMerge(qa, design, loopId) {
   const reassigned = await qa.saved();
   assert.equal(reassigned.network.ramps[loopId].end.lane, alternateLane);
   assert.deepEqual(Object.keys(reassigned.network.ramps).sort(), Object.keys(network.ramps).sort());
-  assert.deepEqual(reassigned.network.ramps[loopId].start, network.ramps[loopId].start);
-  assert.deepEqual(Object.values(reassigned.network.ramps).find(ramp => ramp.shape === 'direct'),
-    Object.values(network.ramps).find(ramp => ramp.shape === 'direct'));
+  assertSameAttachment(reassigned.network.ramps[loopId].start, network.ramps[loopId].start);
+  const [directId] = Object.keys(network.ramps).filter(id => id !== loopId);
+  const { start, end, ...otherGeometry } = network.ramps[directId];
+  const { start: newStart, end: newEnd, ...newGeometry } = reassigned.network.ramps[directId];
+  assertSameAttachment(newStart, start);
+  assertSameAttachment(newEnd, end);
+  assert.deepEqual(newGeometry, otherGeometry);
   await qa.screenshot('reassigned-merge');
   return reassigned;
 }
@@ -306,7 +319,7 @@ for (const viewport of viewportSizes) {
     } catch (error) {
       const screenshot = await qa.screenshot('gesture-failure').catch(() => undefined);
       const detail = await qa.page.locator('#detail').allTextContents().catch(() => []);
-      console.error({ label, screenshot, detail, browserErrors: qa.errors });
+      console.error({ label, screenshot, detail, browserErrors: qa.errors, error });
       throw error;
     } finally {
       await browser.close();
