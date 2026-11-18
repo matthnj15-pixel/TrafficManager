@@ -488,6 +488,22 @@ export function networkNodeElevation(network, id) {
   return attached.every(road => roadGrade(road) === grade) ? grade * 5.5 : 0;
 }
 
+function gradeProfilePart(network,road,from,to) {
+  const path = networkRoadGeometry(road,networkNodes(network));
+  const base = road.gradeProfile ?? { length:path.length,from:0,to:path.length,
+    levelA:!!networkNodeElevation(network,road.a),levelB:!!networkNodeElevation(network,road.b) };
+  return sliceGradeProfile(path,base,from,to);
+}
+
+function sliceGradeProfile(path,base,from,to) {
+  const station = t => {
+    const i = Math.min(100,Math.max(0,t*100));
+    const a = path.samples[Math.floor(i)].length,b = path.samples[Math.ceil(i)].length;
+    return base.from + (base.to-base.from) * (a+(b-a)*(i%1)) / path.length;
+  };
+  return { ...base,from:station(from),to:station(to) };
+}
+
 export function roadElevationProfile(network, road, length) {
   if (road.rampHost && roadGrade(road)) {
     const { source,from,to } = road.rampHost;
@@ -510,11 +526,14 @@ export function roadElevationProfile(network, road, length) {
     };
   }
   if (!roadGrade(road)) return () => 0;
-  const startsAtLevel = !!networkNodeElevation(network, road.a);
-  const endsAtLevel = !!networkNodeElevation(network, road.b);
-  const ramp = Math.min(52, length * .35);
+  const profile = road.gradeProfile;
+  const startsAtLevel = profile?.levelA ?? !!networkNodeElevation(network, road.a);
+  const endsAtLevel = profile?.levelB ?? !!networkNodeElevation(network, road.b);
+  const total = profile?.length ?? length;
+  const ramp = Math.min(52, total * .35);
   return distance => {
-    const rise = clamp(Math.min(startsAtLevel ? length : distance, endsAtLevel ? length : length - distance) / ramp, 0, 1);
+    const d = profile ? profile.from + (profile.to - profile.from) * clamp(distance/length,0,1) : distance;
+    const rise = clamp(Math.min(startsAtLevel ? total : d, endsAtLevel ? total : total - d) / ramp, 0, 1);
     return road.grade * 5.5 * rise * rise * (3 - 2 * rise);
   };
 }
@@ -1037,6 +1056,10 @@ function splitRoad(road, nodes, cuts) {
     previous = cut;
   }
   parts.push(part(previous.node, nodes.get(road.b), p1, p2, false, true));
+  if (road.gradeProfile) {
+    const stations = [0,...cuts.map(cut => cut.t),1];
+    parts.forEach((part,i) => { part.gradeProfile = sliceGradeProfile(geometry,road.gradeProfile,stations[i],stations[i+1]); });
+  }
   if (road.rampHost) {
     const { source, from, to } = road.rampHost;
     const stations = [from, ...cuts.map(cut => from + cut.t * (to - from)), to];
@@ -1499,6 +1522,12 @@ export function separateNetworkJunction(network, id, neighbor, grade) {
     return { issue: "Match the lane counts and center the segments on each through road." };
   }
   const nodes = networkNodes(network);
+  const crossing = nodes.get(id);
+  if (crossing.movements && axes.some(([a,b]) => [[a,b],[b,a]].some(([from,to]) =>
+      Array.from({length:from.incoming},(_,lane) => lane).some(lane => !crossing.movements.some(move =>
+        move.from === from.neighbor && move.to === to.neighbor && move.fromLane === lane && move.toLane === lane))))) {
+    return { issue: 'This crossing restricts a through lane. Edit its lane movements before separating the roads.' };
+  }
   const legs = axes.flat();
   let next = { ...network, nodes: network.nodes.filter(node => node.id !== id),
     roads: network.roads.filter(road => !legs.some(leg => leg.road === road)) };
@@ -1599,6 +1628,9 @@ function validNetwork(network) {
     (road.rampPiece === undefined || road.rampPiece && road.rampId && road.rampPiece.from >= 0 && road.rampPiece.to <= 1 &&
       road.rampPiece.from < road.rampPiece.to && Array.isArray(road.rampPiece.spans) && road.rampPiece.spans.length <= 12 &&
       road.rampPiece.spans.every(span => Array.isArray(span) && span.length === 8 && span.every(Number.isFinite))) &&
+    (road.gradeProfile === undefined || road.gradeProfile && [road.gradeProfile.length,road.gradeProfile.from,road.gradeProfile.to].every(Number.isFinite) &&
+      road.gradeProfile.from >= 0 && road.gradeProfile.from < road.gradeProfile.to && road.gradeProfile.to <= road.gradeProfile.length + .001 &&
+      [road.gradeProfile.levelA,road.gradeProfile.levelB].every(v => typeof v === 'boolean')) &&
     (road.rampProfile === undefined || road.rampProfile && [road.rampProfile.length,road.rampProfile.offset,road.rampProfile.z0,road.rampProfile.z1].every(Number.isFinite) &&
       road.rampProfile.length > 0 && road.rampProfile.offset >= 0 && road.rampProfile.offset < road.rampProfile.length) &&
     (road.rampHost === undefined || road.rampHost && road.rampHost.source && !road.rampHost.source.rampHost && !road.rampHost.source.rampCurve &&
@@ -1723,7 +1755,7 @@ function rampEndpointAllowed(network, road, t, end, forward) {
 export function rampLaneTargets(network, point, end, { radius = 24, host, replace } = {}) {
   if (host) host = rampHost(host);
   const before = network;
-  if (replace) network = removeRamp(network,replace);
+  if (replace) network = removeRamp(network,replace,{ editing:true });
   const selected = before.ramps?.[replace]?.[end === 'a' ? 'start' : 'end'];
   const boundary = host && sameHost(host,selected?.host) && widthBoundary(network,before,replace,end,selected);
   const anchorSide = boundary && ((end === 'a') === selected.forward ? boundary.left : boundary.right);
@@ -1899,7 +1931,7 @@ function cleanupRampNodes(network) {
   return next;
 }
 
-export function removeRamp(network, id) {
+export function removeRamp(network, id, { editing = false } = {}) {
   const removed = network.roads.filter(road => road.rampId === id);
   if (!removed.length) return network;
   const ramps = { ...network.ramps };
@@ -1907,13 +1939,25 @@ export function removeRamp(network, id) {
   let next = excludingRoads(network, removed);
   next = reconcileJunctionMovements({ ...next, ramps });
   next = cleanupRampNodes(next);
+  if (editing) return next;
   const hosts = Object.values(ramps).flatMap(r => [r.start.host,r.end.host]);
+  const remainingRampNodes = new Set(next.roads.filter(r => r.rampId).flatMap(r => [r.a,r.b]));
+  const activeSources = next.roads.filter(r => r.rampHost && (remainingRampNodes.has(r.a) || remainingRampNodes.has(r.b))).map(rampHost);
   const cleaned = next.roads.map(road => {
     if (!road.rampHost || hosts.some(host => sameHost(host,rampHost(road))) ||
-        next.nodes.some(n => n.rampCut && (n.id === road.a || n.id === road.b))) return road;
-    const copy = { ...road }; delete copy.rampHost; return copy;
+        activeSources.some(host => sameHost(host,rampHost(road)))) return road;
+    const copy = { ...road };
+    if (roadGrade(road) && (road.rampHost.from !== 0 || road.rampHost.to !== 1)) {
+      copy.gradeProfile = gradeProfilePart(next,rampHost(road),road.rampHost.from,road.rampHost.to);
+    }
+    delete copy.rampHost;
+    return copy;
   });
-  next = { ...next,roads:cleaned };
+  const stillGenerated = new Set(cleaned.filter(r => r.rampHost || r.rampId).flatMap(r => [r.a,r.b]));
+  next = { ...next,roads:cleaned,nodes:next.nodes.map(node => {
+    if (!node.rampCut || stillGenerated.has(node.id)) return node;
+    const copy = { ...node }; delete copy.rampCut; return copy;
+  }) };
   if (!Object.keys(ramps).length) delete next.ramps;
   return next;
 }
@@ -1998,7 +2042,7 @@ export function previewRamp(network, draft) {
   if (!network || !draft?.start || !draft?.end) return { issue: 'Choose a departure lane and a receiving lane.' };
   const grade = draft.grade ?? 0, shape = draft.shape ?? 'direct';
   if (![-1,0,1].includes(grade) || !['direct','loop'].includes(shape)) return { issue: 'Choose a ramp shape and crossing level.' };
-  let next = draft.replace ? removeRamp(network, draft.replace) : network;
+  let next = draft.replace ? removeRamp(network, draft.replace,{ editing:true }) : network;
   if (draft.replace) {
     next = slideWidthBoundary(next,network,draft.replace,'a',draft.start);
     next = slideWidthBoundary(next,network,draft.replace,'b',draft.end);

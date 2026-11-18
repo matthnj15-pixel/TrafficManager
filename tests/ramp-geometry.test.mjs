@@ -141,3 +141,19 @@ test('explicit ramp movement rules follow a receiving or departure lane reassign
   const turns = junctionMovements(edited.network,newNode).filter(m => m.to === departure.b);
   assert.deepEqual(turns.map(m => [m.fromLane,m.rule]),[[1,'yield']]);
 });
+
+test('separation preserves disabled through movements and erased ramps release widened hosts for ordinary edits', () => {
+  const graph = { map:'short-merge',nodes:[{id:'j1',x:270,y:315,control:'priority'}],
+    roads:[['west','j1'],['j1','east'],['south','j1'],['j1','north']].map(road) };
+  const node = graph.nodes[0];
+  const movements = junctionMovements(graph,node).filter(m => !(m.from === 'west' && m.to === 'east' && m.fromLane === 0));
+  assert.match(separateNetworkJunction({...graph,nodes:[{...node,movements}]},'j1','west',1).issue,/restricts a through lane/);
+  const built = apply(graph,{start:target('west','j1',.55),end:target('j1','north',.45)});
+  const wider = resizeRoadLanes(built.network,0,3,2);
+  assert.ok(wider.network,wider.issue);
+  const removed = removeRamp(wider.network,built.rampId);
+  assert.equal(removed.roads.some(r => r.rampHost),false);
+  const edit = removeNetworkNode(removed,'j1');
+  assert.ok(edit.network,edit.issue);
+  assert.ok(validate({...baseline,network:edit.network}));
+});
