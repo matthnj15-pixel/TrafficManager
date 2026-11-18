@@ -313,6 +313,9 @@ button:not(:disabled):active { filter: brightness(.9); }
   gap: 4px 13px;
 }
 .shape-controls, .snap-controls, .segment-lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.shape-controls { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.shape-controls button { grid-column: span 2; }
+.shape-controls button:nth-child(-n+2) { grid-column: span 3; }
 .shape-controls button, .segment-lanes button {
   min-width: 0;
   min-height: 47px;
@@ -410,11 +413,51 @@ details summary::-webkit-details-marker { display: none; }
 .structure-layout .group-label { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
 .structure-sizes, .crossing-axis { display: grid; gap: 4px; align-items: center; }
 .structure-sizes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.crossing-axis { grid-template-columns: minmax(0, 1fr) 75px 77px; }
+.crossing-axis { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(44px, .52fr)); }
 .crossing-axis + .crossing-axis { margin-top: 3px; }
 .crossing-axis span { font-size: .72rem; line-height: 1.16; }
+.crossing-axis[data-active="true"] span { color: #bcebdc; font-weight: 740; }
 .structure-layout button { min-height: 36px; padding: 0 3px; font-size: .76rem; }
 .structure-layout .structure-back { justify-self: start; padding-inline: 8px; }
+.crossing-impact { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 3px 8px; }
+.crossing-impact p { font-size: .72rem; }
+.crossing-impact details { position: relative; }
+.crossing-impact summary { min-height: 26px; font-size: .72rem; }
+.crossing-impact details div { position: absolute; z-index: 1; bottom: calc(100% + 5px); right: 0; width: max-content; max-width: 80vw;
+  padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: #153640; }
+
+.ramp-editor { display: grid; gap: 5px; }
+.ramp-stage { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.ramp-stage strong { margin-right: auto; font-size: .82rem; }
+.ramp-stage button { min-height: 42px; padding-inline: 10px; }
+.ramp-shapes, .ramp-grade, .ramp-edit-tools { display: grid; gap: 5px; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; }
+.ramp-shapes button { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.ramp-shapes svg { width: 46px; height: 27px; }
+.ramp-grade button, .ramp-edit-tools button { min-width: 0; padding-inline: 3px; }
+.ramp-edit-tools button { white-space: normal; line-height: 1.1; }
+.ramp-picker { max-height: 130px; display: grid; gap: 4px; overflow: auto; overscroll-behavior: contain; }
+.ramp-picker button { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: normal; text-align: left; }
+.ramp-picker button svg { flex: none; }
+.ramp-picker button span { display: grid; padding: 3px 0; }
+.ramp-picker button small { color: #bcebdc; font-size: .68rem; }
+.ramp-picker .suggested { box-shadow: inset 0 0 0 1px #a9e7d3; }
+.ramp-demand { max-height: 70px; overflow: auto; }
+.ramp-demand p:first-child { color: #d9eee3; font-weight: 650; }
+.ramp-lane-arrow { cursor: pointer; }
+.ramp-lane-arrow:focus-visible circle { fill: #246682; stroke: #ffd284; stroke-width: 1; }
+.ramp-handle.draft-target:focus-visible circle:nth-child(2) { stroke: #ad701d; }
+.ramp-handle path { pointer-events: none; }
+.ramp-surface { fill: #247981; stroke: #f3f5db; stroke-width: 1.7; }
+[data-ramp-grade="1"] .ramp-surface { fill: #4d617f; stroke-width: 2.8; }
+[data-ramp-grade="-1"] .ramp-surface { fill: #655d79; stroke-dasharray: 4 3; }
+.segment-actions .widen-weave { min-height: 35px; background: #bcebdc; color: #143a41; }
+.weave-controls { display: flex; align-items: center; gap: 7px; }
+.weave-controls p { font-size: .73rem; }
+.weave-layer path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+.weave-outline { stroke: #3b2520; stroke-opacity: .8; stroke-width: 7; }
+.weave-marking { stroke: #ffd582; stroke-width: 4; stroke-dasharray: 8 4; }
+.movement-report { margin-top: 5px; font-size: .8rem; }
+.movement-report ul { padding-left: 1.2em; }
 @media (max-width: 370px) {
   .draw-footer { gap: 4px; }
   .draft-presets { gap: 4px; }
