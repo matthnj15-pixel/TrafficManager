@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { baseline, junctionLegs, junctionMovements, levelStart, networkLaneSamples, networkNodes, networkRoadGeometry,
-  previewRamp, rampLaneTargets, removeRamp, resizeRoadLanes, roadElevationProfile, separateNetworkJunction, validate } from '../model.mjs';
+  previewRamp, rampLaneTargets, removeNetworkNode, removeNetworkRoad, removeRamp, resizeRoadLanes, shiftNetworkRoad, splitNetworkRoad, roadElevationProfile, separateNetworkJunction, validate } from '../model.mjs';
 
 const target = (a, b, t, forward = true, lane = 0) => ({ host: { a, b }, t, forward, lane });
 const stock = () => levelStart('short-merge').network;
@@ -86,8 +86,58 @@ test('surface ramps create a real four-leg crossing while the same overpass and 
     const shared = network.nodes.find(n => Math.hypot(n.x-x,n.y-y)<.1);
     if (grade === 0) {
       assert.equal(junctionLegs(network,shared.id).length,4);
-      assert.ok(junctionMovements(network,shared).some(m => m.from === 'j5' && m.to === 'j6'));
+      const movements = junctionMovements(network,shared).filter(m => m.from === 'j5' || m.to === 'j6');
+      assert.ok(movements.some(m => m.from === 'j5' && m.to === 'j6'));
+      const customized = { ...network, nodes:network.nodes.map(n => n === shared ? { ...n,movements,control:'allway_stop' } : n) };
+      const edited = apply(customized,{...customized.ramps[rampId],replace:rampId});
+      const crossing = edited.network.nodes.find(n => Math.hypot(n.x-x,n.y-y)<.1);
+      assert.equal(crossing.control,'allway_stop');
+      assert.equal(junctionMovements(edited.network,crossing).length,movements.length);
     } else assert.equal(shared,undefined);
     assert.deepEqual(removeRamp(network,rampId),graph);
   }
+});
+
+test('removing a crossing ramp restores the other ramp to its original single edge', () => {
+  const nodes = [[45,340],[140,340],[360,340],[455,340],[250,570],[250,475],[250,235],[250,125]]
+    .map(([x,y],i) => ({id:`j${i+1}`,x,y,control:'priority'}));
+  const roads = [0,2,4,6].map(i => ({ a:nodes[i].id,b:nodes[i+1].id,forward:1,backward:0,bend:0 }));
+  const graph = { map:'short-merge',nodes,roads };
+  const [a,b,c,d] = roads.map(r => target(r.a,r.b,.5));
+  const first = apply(graph,{start:a,end:b});
+  const second = apply(first.network,{start:c,end:d});
+  assert.equal(second.crossings.length,1);
+  const restored = removeRamp(second.network,second.rampId);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored)),JSON.parse(JSON.stringify(first.network)));
+});
+
+test('host edits that would disconnect a ramp fail atomically, and original junction anchors survive a later host split', () => {
+  const graph = { map:'short-merge',nodes:[{id:'j1',x:270,y:315,control:'priority'}],
+    roads:[['west','j1'],['j1','east'],['south','j1'],['j1','north']].map(road) };
+  const draft = {start:target('west','j1',.55),end:target('j1','north',.45)};
+  const { network,roads } = apply(graph,draft);
+  const incoming = network.roads.findIndex(r => r.b === roads[0].a && r.a === roads[0].laneA.neighbor);
+  assert.equal(removeNetworkRoad(network,incoming),network);
+  assert.ok(removeNetworkNode(network,roads[0].a).issue);
+  assert.ok(separateNetworkJunction(network,'j1','east',1).issue);
+  assert.ok(shiftNetworkRoad(network,incoming,1).issue);
+  const terminal = apply(graph,{start:target('west','j1',1),end:target('j1','east',.55)});
+  const host = terminal.network.roads[0], pose = networkRoadGeometry(host,networkNodes(terminal.network)).samples[40];
+  const split = splitNetworkRoad(terminal.network,0,{id:'j99',x:pose.x,y:pose.y,control:'priority'},.4);
+  assert.ok(split.network,split.issue);
+  assert.equal(split.network.roads.find(r => r.laneA)?.laneA.neighbor,'j99');
+  assert.ok(validate({...baseline,network:split.network}));
+});
+
+test('explicit ramp movement rules follow a receiving or departure lane reassignment', () => {
+  const { network,rampId,roads } = apply(stock(),direct);
+  const fork = network.nodes.find(n => n.id === roads[0].a);
+  const movements = junctionMovements(network,fork).map(m => ({ ...m,rule:'yield' }));
+  const custom = { ...network,nodes:network.nodes.map(n => n === fork ? {...n,movements} : n) };
+  const saved = custom.ramps[rampId];
+  const edited = apply(custom,{...saved,start:{...saved.start,lane:1},replace:rampId});
+  const departure = edited.roads.find(r => r.laneA);
+  const newNode = edited.network.nodes.find(n => n.id === departure.a);
+  const turns = junctionMovements(edited.network,newNode).filter(m => m.to === departure.b);
+  assert.deepEqual(turns.map(m => [m.fromLane,m.rule]),[[1,'yield']]);
 });
