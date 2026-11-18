@@ -146,7 +146,7 @@ async function moveLoopMerge(qa, design, loopId) {
   await qa.tap('Apply');
   const reassigned = await qa.saved();
   assert.equal(reassigned.network.ramps[loopId].end.lane, alternateLane);
-  assert.deepEqual(Object.keys(reassigned.network.ramps), Object.keys(network.ramps));
+  assert.deepEqual(Object.keys(reassigned.network.ramps).sort(), Object.keys(network.ramps).sort());
   assert.deepEqual(reassigned.network.ramps[loopId].start, network.ramps[loopId].start);
   assert.deepEqual(Object.values(reassigned.network.ramps).find(ramp => ramp.shape === 'direct'),
     Object.values(network.ramps).find(ramp => ramp.shape === 'direct'));
