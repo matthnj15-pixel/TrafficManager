@@ -478,13 +478,37 @@ export function roundaboutLoops(network) {
 
 export function networkNodeElevation(network, id) {
   if (networkTerminals(network)[id]) return 0;
-  const attached = network.roads.filter(road => road.a === id || road.b === id);
+  const node = network.nodes.find(n => n.id === id);
+  if (Number.isFinite(node?.rampElevation)) return node.rampElevation;
+  const connected = network.roads.filter(road => road.a === id || road.b === id);
+  const hosts = connected.filter(road => !road.rampId);
+  const attached = hosts.length ? hosts : connected;
   if (attached.length < 2) return 0;
   const grade = roadGrade(attached[0]);
   return attached.every(road => roadGrade(road) === grade) ? grade * 5.5 : 0;
 }
 
 export function roadElevationProfile(network, road, length) {
+  if (road.rampHost && roadGrade(road)) {
+    const { source,from,to } = road.rampHost;
+    const nodes = networkNodes(network);
+    if (nodes.has(source.a) && nodes.has(source.b)) {
+      const full = networkRoadGeometry(source,nodes);
+      const start = full.samples[Math.round(from * 100)].length, end = full.samples[Math.round(to * 100)].length;
+      const elevation = roadElevationProfile(network,source,full.length);
+      return distance => elevation(start + (end - start) * clamp(distance / length,0,1));
+    }
+  }
+  if (road.rampId) {
+    const z0 = road.rampProfile?.z0 ?? networkNodeElevation(network,road.a), z1 = road.rampProfile?.z1 ?? networkNodeElevation(network,road.b), z = roadGrade(road) * 5.5;
+    const total = road.rampProfile?.length ?? length;
+    const run = Math.min(52,total / 2);
+    const smooth = t => { const u = clamp(t,0,1); return u * u * (3 - 2 * u); };
+    return distance => {
+      const d = (road.rampProfile?.offset ?? 0) + distance;
+      return z + (z0 - z) * (1 - smooth(d/run)) + (z1 - z) * (1 - smooth((total-d)/run));
+    };
+  }
   if (!roadGrade(road)) return () => 0;
   const startsAtLevel = !!networkNodeElevation(network, road.a);
   const endsAtLevel = !!networkNodeElevation(network, road.b);
@@ -505,7 +529,7 @@ export function junctionLegs(network, id, nodes = networkNodes(network)) {
       outgoing: atA ? road.forward : road.backward,
       arrivalAnchor: atA ? undefined : road.laneB,
       departureAnchor: atA ? road.laneA : undefined,
-      slip: !!(road.laneA || road.laneB),
+      slip: !!(road.rampId || road.laneA || road.laneB),
       bearing: roadEndBearing(road, nodes, atA),
       rule: (atA ? road.atA : road.atB) ?? "default"
     }];
@@ -563,7 +587,7 @@ function fitsLaneAnchors(move, from, to) {
 }
 
 function roadEndBearing(road, nodes, atA) {
-  const { start, end, a, b } = roadControlPoints(road, nodes);
+  const { start, end, a, b } = road.rampCurve ? rampGeometry(road.rampCurve) : roadControlPoints(road, nodes);
   const tip = atA ? start : end, handle = atA ? a : b;
   return Math.atan2(handle.y - tip.y, handle.x - tip.x);
 }
@@ -633,11 +657,11 @@ function validMovement(movement, legs) {
 
 function validLaneAnchor(anchor, road, atA, network) {
   if (anchor === undefined) return true;
-  if (!anchor || roadGrade(road) || road.roundabout || road.forward !== 1 || road.backward !== 0 || !Number.isInteger(anchor.lane) || anchor.lane < 0) return false;
+  if (!anchor || roadGrade(road) && !road.rampId || road.roundabout || road.forward !== 1 || road.backward !== 0 || !Number.isInteger(anchor.lane) || anchor.lane < 0) return false;
   const host = network.roads.find(item => item !== road &&
     (item.a === (atA ? road.a : road.b) && item.b === anchor.neighbor ||
      item.b === (atA ? road.a : road.b) && item.a === anchor.neighbor));
-  if (!host || host.laneA || host.laneB || roadGrade(host) || host.roundabout) return false;
+  if (!host || host.rampId || host.laneA || host.laneB || roadGrade(host) && !road.rampId || host.roundabout) return false;
   const from = atA ? anchor.neighbor : road.b;
   return anchor.lane < (host.a === from ? host.forward : host.backward);
 }
@@ -679,6 +703,7 @@ function roadControlPoints(road, nodes) {
 }
 
 export function networkRoadGeometry(road, nodes) {
+  if (road.rampCurve) return rampGeometry(road.rampCurve);
   const { start, a, b, end } = roadControlPoints(road, nodes);
   const geometry = cubic(start, a, b, end);
   return { ...geometry, speed: road.bend || road.controls ? geometry.speed : 12 };
@@ -701,6 +726,7 @@ function offsetRoadPose(point, offset) {
 // The visible lane ports sit back from the junction for easier tapping. The
 // actual lane joins sit at the junction and carry the host lane's travel heading.
 export function laneAnchoredCurve(road, network, nodes, geometry = networkRoadGeometry(road, nodes)) {
+  if (road.rampCurve) return geometry;
   if (!road.laneA && !road.laneB) return;
   const shift = road.laneShift ?? 0;
   const endpoint = (atStart, anchor) => {
@@ -873,7 +899,7 @@ export function networkNodeIssue(point, network) {
 export function networkRoadIssue(network, road, ignore = -1, checkElevation = true) {
   const nodes = networkNodes(network);
   const start = nodes.get(road.a), end = nodes.get(road.b);
-  if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 16) return "Choose a point farther away.";
+  if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < (road.rampId ? 3 : 16)) return "Choose a point farther away.";
   const geometry = networkRoadGeometry(road, nodes);
   const { samples, speed } = geometry;
   const laneCurve = laneAnchoredCurve(road, network, nodes, geometry);
@@ -884,7 +910,7 @@ export function networkRoadIssue(network, road, ignore = -1, checkElevation = tr
     const center = laneCurve ? point : { x: point.x - Math.sin(point.angle) * offset, y: point.y + Math.cos(point.angle) * offset };
     const obstacle = footprintAt(center, clearance, network);
     if (obstacle) return `This road would cross ${obstacle}.`;
-    if (center.x < 8 || center.x > 492 || center.y < 68 || center.y > 622) return "Keep roads inside the map.";
+    if (center.x < 8 + (road.rampId ? clearance - 2 : 0) || center.x > 492 - (road.rampId ? clearance - 2 : 0) || center.y < 68 + (road.rampId ? clearance - 2 : 0) || center.y > 622 - (road.rampId ? clearance - 2 : 0)) return "Keep roads inside the map.";
   }
   for (const [index, other] of network.roads.entries()) {
     if (index === ignore) continue;
@@ -909,7 +935,7 @@ export function networkRoadIssue(network, road, ignore = -1, checkElevation = tr
 }
 
 export function roadShapeIssue(network, road, nodes) {
-  if (!road.controls && !road.bend && !road.laneShift && !road.laneA && !road.laneB) return;
+  if (!road.rampCurve && !road.controls && !road.bend && !road.laneShift && !road.laneA && !road.laneB) return;
   const geometry = networkRoadGeometry(road, nodes);
   const lane = laneAnchoredCurve(road, network, nodes, geometry);
   const shift = road.laneShift ?? 0;
@@ -937,7 +963,7 @@ export function roadSurfaceSamples(road, network, nodes, geometry = networkRoadG
 function roadCrossings(road, other, nodes) {
   const first = networkRoadGeometry(road, nodes);
   const second = networkRoadGeometry(other, nodes);
-  const controls = ({ start, a, b, end }) => [start, a, b, end];
+  const controls = curve => curve.samples;
   for (const axis of ["x", "y"]) {
     const a = controls(first).map(point => point[axis]);
     const b = controls(second).map(point => point[axis]);
@@ -971,9 +997,9 @@ function roadCrossings(road, other, nodes) {
       const u = cross(qx, qy, rx, ry) / determinant;
       if (Math.min(t, u) < -1e-7 || Math.max(t, u) > 1 + 1e-7) continue;
       const x = a.x + t * rx, y = a.y + t * ry;
-      if (shared.some(node => Math.hypot(node.x - x, node.y - y) < .1) ||
+      if (shared.some(node => Math.hypot(node.x - x, node.y - y) < (road.rampId || other.rampId ? networkLaneWidth * 2 : .1)) ||
           hits.some(hit => Math.hypot(hit.x - x, hit.y - y) < .1)) continue;
-      hits.push({ x, y, t: (i - 1 + t) / 100, u: (j - 1 + u) / 100 });
+      hits.push({ x, y, t: (i - 1 + t) / (samples.length - 1), u: (j - 1 + u) / (otherSamples.length - 1) });
     }
   }
   return hits;
@@ -988,6 +1014,7 @@ export function nextNetworkNode(network, point) {
 
 function splitRoad(road, nodes, cuts) {
   if (!cuts.length) return [road];
+  if (road.rampCurve) return splitRampCurve(road, cuts);
   const geometry = networkRoadGeometry(road, nodes);
   const mix = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
   let [p0, p1, p2, p3] = [geometry.start, geometry.a, geometry.b, geometry.end];
@@ -1010,10 +1037,16 @@ function splitRoad(road, nodes, cuts) {
     previous = cut;
   }
   parts.push(part(previous.node, nodes.get(road.b), p1, p2, false, true));
+  if (road.rampHost) {
+    const { source, from, to } = road.rampHost;
+    const stations = [from, ...cuts.map(cut => from + cut.t * (to - from)), to];
+    parts.forEach((item, i) => { item.rampHost = { source, from: stations[i], to: stations[i + 1] }; });
+  }
   return parts;
 }
 
 export function splitNetworkRoad(network, index, node, t) {
+  if (network.roads[index].rampId) return { issue: "Edit this ramp using its lane endpoints and curve handle." };
   if (network.roads[index].roundabout) return { issue: "Connect at an existing roundabout entry." };
   const nodes = networkNodes(network);
   const parts = splitRoad(network.roads[index], nodes, [{ node, t }]);
@@ -1096,6 +1129,7 @@ export function commitRoadDraft(network, points, lanes, controls, grade = 0) {
 }
 
 export function editNetworkCurve(network, index, controls) {
+  if (network.roads[index].rampId) return { issue: "Edit this ramp using its lane endpoints and curve handle." };
   if (network.roads[index].roundabout) return { issue: "The roundabout uses a circular lane." };
   const road = { ...network.roads[index], controls, bend: 0 };
   const issue = roadShapeIssue(network, road, networkNodes(network));
@@ -1357,6 +1391,7 @@ function excludingRoads(network, removed) {
 export function removeNetworkRoad(network, index) {
   const road = network.roads[index];
   if (!road) return network;
+  if (road.rampId) return removeRamp(network, road.rampId);
   return excludingRoads(network, [road]);
 }
 
@@ -1544,7 +1579,22 @@ function validNetwork(network) {
         !Number.isFinite(node.x) || !Number.isFinite(node.y) || networkNodeIssue(node, network) || !["priority", "allway_stop", "traffic_light", "yield"].includes(node.control)) return false;
     ids.add(node.id);
   }
+  if (network.ramps !== undefined && (!network.ramps || typeof network.ramps !== 'object' || Array.isArray(network.ramps))) return false;
+  const targetSchema = p => p && p.host && ids.has(p.host.a) && ids.has(p.host.b) && p.host.a !== p.host.b &&
+    Number.isFinite(p.t) && p.t >= 0 && p.t <= 1 && typeof p.forward === 'boolean' && Number.isInteger(p.lane) && p.lane >= 0 && p.lane < 4;
+  for (const [id,draft] of Object.entries(network.ramps ?? {})) {
+    if (!/^ramp\d+$/.test(id) || !draft || !targetSchema(draft.start) || !targetSchema(draft.end) ||
+        !['loop','direct'].includes(draft.shape) || ![-1,0,1].includes(draft.grade)) return false;
+    const parts = network.roads.filter(r => r?.rampId === id);
+    if (parts.filter(r => r.laneA).length !== 1 || parts.filter(r => r.laneB).length !== 1) return false;
+  }
   const validRoads = network.roads.every(road => road && ids.has(road.a) && ids.has(road.b) &&
+    (road.rampId === undefined ? road.rampCurve === undefined : Object.hasOwn(network.ramps ?? {},road.rampId) &&
+      road.forward === 1 && road.backward === 0 && Array.isArray(road.rampCurve) && road.rampCurve.length > 0 && road.rampCurve.length <= 12 &&
+      road.rampCurve.every(span => Array.isArray(span) && span.length === 8 && span.every(Number.isFinite))) &&
+    (road.rampHost === undefined || road.rampHost && road.rampHost.source && !road.rampHost.source.rampHost &&
+      ids.has(road.rampHost.source.a) && ids.has(road.rampHost.source.b) && Number.isFinite(road.rampHost.from) && Number.isFinite(road.rampHost.to) &&
+      road.rampHost.from >= 0 && road.rampHost.from < road.rampHost.to && road.rampHost.to <= 1) &&
     [road.forward, road.backward].every(count => Number.isInteger(count) && count >= 0 && count <= 4) &&
     road.forward + road.backward > 0 && Number.isFinite(road.bend) && Math.abs(road.bend) <= 32 &&
     [-1, 0, 1].includes(roadGrade(road)) &&
@@ -1571,4 +1621,412 @@ function validNetwork(network) {
       node.movements.every(movement => validMovement(movement, legs)) &&
       new Set(node.movements.map(movementKey)).size === node.movements.length;
   });
+}
+
+// Ramp lanes store their selected directed host and original cubic parameter.
+// Splitting the host changes its neighbors, but leaves that address unchanged.
+const rampHost = road => road.rampHost?.source ?? road;
+const sameHost = (a, b) => a?.a === b?.a && a?.b === b?.b;
+const vectorPoint = (p, heading, distance) => ({ x: p.x + Math.cos(heading) * distance, y: p.y + Math.sin(heading) * distance });
+const rampDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const spanCoordinates = (...points) => points.flatMap(p => [p.x, p.y]);
+const spanPoints = span => [0, 2, 4, 6].map(i => ({ x: span[i], y: span[i + 1] }));
+
+function rampGeometry(spans) {
+  const curves = spans.map(span => cubic(...spanPoints(span)));
+  let length = 0;
+  const samples = curves.flatMap((curve, i) => {
+    const points = curve.samples.slice(i ? 1 : 0).map(p => ({ ...p, length: p.length + length }));
+    length += curve.length;
+    return points;
+  });
+  const last = curves.at(-1);
+  return { start: curves[0].start, a: curves[0].a, b: last.b, end: last.end, samples, length,
+    radius: Math.min(...curves.map(c => c.radius)), speed: Math.min(...curves.map(c => c.speed)),
+    path: curves[0].path + curves.slice(1).map(c => ` C ${c.a.x} ${c.a.y} ${c.b.x} ${c.b.y} ${c.end.x} ${c.end.y}`).join("") };
+}
+
+function divideSpan(span, t) {
+  const [p, a, b, q] = spanPoints(span);
+  const mix = (x, y) => ({ x: x.x + (y.x - x.x) * t, y: x.y + (y.y - x.y) * t });
+  const pa = mix(p, a), ab = mix(a, b), bq = mix(b, q);
+  const left = mix(pa, ab), right = mix(ab, bq), middle = mix(left, right);
+  return [spanCoordinates(p, pa, left, middle), spanCoordinates(middle, right, bq, q)];
+}
+
+function rampSlice(spans, from, to) {
+  return spans.flatMap((span, i) => {
+    const lo = Math.max(0, from * spans.length - i), hi = Math.min(1, to * spans.length - i);
+    if (hi - lo < 1e-8) return [];
+    const left = hi < 1 ? divideSpan(span, hi)[0] : span;
+    return [lo > 0 ? divideSpan(left, lo / hi)[1] : left];
+  });
+}
+
+function splitRampCurve(road, cuts) {
+  const points = [{ node: { id: road.a }, t: 0 }, ...[...cuts].sort((a,b) => a.t - b.t), { node: { id: road.b }, t: 1 }];
+  return points.slice(1).map((point, i) => ({ ...road, a: points[i].node.id, b: point.node.id,
+    laneA: i === 0 ? road.laneA : undefined, laneB: i === cuts.length ? road.laneB : undefined,
+    atA: i === 0 ? road.atA : undefined, atB: i === cuts.length ? road.atB : undefined,
+    rampCurve: rampSlice(road.rampCurve, points[i].t, point.t) }));
+}
+
+// Derive position and travel heading from the live host, including lane shifts.
+function rampTargetOn(road, path, t, forward, lane) {
+  const p = t * (path.samples.length - 1), a = path.samples[Math.floor(p)], b = path.samples[Math.ceil(p)];
+  const pose = interpolatePose(a, b, p % 1);
+  if (!forward) pose.angle += Math.PI;
+  const center = roadLanePosition(pose, forward ? road.forward : road.backward, lane, (road.laneShift ?? 0) * (forward ? 1 : -1));
+  const host = rampHost(road), from = road.rampHost?.from ?? 0, to = road.rampHost?.to ?? 1;
+  return { host: { a: host.a, b: host.b }, t: from + (to - from) * t, forward, lane,
+    x: center.x, y: center.y, angle: pose.angle };
+}
+
+function rampEndpointAllowed(network, road, t, end, forward) {
+  if (t > 1e-7 && t < 1 - 1e-7) return true;
+  const atB = t >= .5;
+  return !networkTerminals(network)[road[atB ? 'b' : 'a']] && atB === (end === 'a' ? forward : !forward);
+}
+
+export function rampLaneTargets(network, point, end, { radius = 24, host, replace } = {}) {
+  if (host) host = rampHost(host);
+  if (replace) network = removeRamp(network,replace);
+  const nodes = networkNodes(network), hits = [];
+  for (const [index, road] of network.roads.entries()) {
+    if (road.rampId || road.laneA || road.laneB || road.roundabout || host && !sameHost(host, rampHost(road))) continue;
+    const path = networkRoadGeometry(road, nodes);
+    for (const forward of [true, false]) for (let lane = 0; lane < (forward ? road.forward : road.backward); lane++) {
+      let best, previous = rampTargetOn(road, path, 0, forward, lane);
+      for (let i = 1; i < path.samples.length; i++) {
+        const current = rampTargetOn(road, path, i / 100, forward, lane);
+        const dx = current.x - previous.x, dy = current.y - previous.y;
+        const u = clamp(((point.x - previous.x) * dx + (point.y - previous.y) * dy) / (dx * dx + dy * dy || 1), 0, 1);
+        const distance = Math.hypot(point.x - previous.x - dx * u, point.y - previous.y - dy * u);
+        if (!best || distance < best.distance) best = { distance, t: (i - 1 + u) / 100 };
+        previous = current;
+      }
+      if (best.distance > radius) continue;
+      // Close taps select an existing junction throat, including an extra lane's terminal.
+      const station = path.samples[Math.round(best.t * 100)].length;
+      let t = best.t;
+      if (station < 16 * scale) t = 0;
+      else if (path.length - station < 16 * scale) t = 1;
+      if (!rampEndpointAllowed(network, road, t, end, forward)) continue;
+      const descriptor = rampTargetOn(road, path, t, forward, lane);
+      const distance = rampDistance(descriptor, point);
+      if (distance <= radius) hits.push({ ...descriptor, distance, roadIndex: index });
+    }
+  }
+  return hits.sort((a,b) => a.distance - b.distance);
+}
+
+function resolveRampTarget(network, target, end) {
+  if (!target || !Number.isFinite(target.t) || !Number.isInteger(target.lane) || target.lane < 0 || typeof target.forward !== 'boolean') return;
+  const nodes = networkNodes(network);
+  for (const [index, road] of network.roads.entries()) {
+    if (!sameHost(rampHost(road), target.host) || road.rampId || road.roundabout || road.laneA || road.laneB ||
+        target.lane >= (target.forward ? road.forward : road.backward)) continue;
+    const from = road.rampHost?.from ?? 0, to = road.rampHost?.to ?? 1;
+    if (target.t < from - 1e-7 || target.t > to + 1e-7) continue;
+    const t = clamp((target.t - from) / (to - from), 0, 1);
+    if (!rampEndpointAllowed(network, road, t, end, target.forward)) continue;
+    const path = networkRoadGeometry(road, nodes);
+    const pose = rampTargetOn(road, path, t, target.forward, target.lane);
+    const { start, a, b, end: finish } = path;
+    const coords = divideSpan(spanCoordinates(start,a,b,finish), t)[0];
+    return { pose, road, index, t, center: { x: coords[6], y: coords[7] } };
+  }
+}
+
+// Two equal-radius directed arcs share an external tangent. Each arc is
+// subdivided at 90 degrees so even a sweeping loop retains finite curvature.
+function loopSpans(start, end, radius, side) {
+  const cs = vectorPoint(start, start.angle + side * Math.PI / 2, radius);
+  const ce = vectorPoint(end, end.angle + side * Math.PI / 2, radius);
+  const tangent = Math.atan2(ce.y - cs.y, ce.x - cs.x);
+  const spans = [], tau = Math.PI * 2;
+  function arc(center, heading, finish) {
+    const sweep = ((side * (finish - heading)) % tau + tau) % tau;
+    const n = Math.ceil(sweep / (Math.PI / 2));
+    for (let i = 0; i < n; i++) {
+      const a = heading + side * sweep * i / n, b = heading + side * sweep * (i + 1) / n;
+      const start = vectorPoint(center, a - side * Math.PI / 2, radius), end = vectorPoint(center, b - side * Math.PI / 2, radius);
+      const reach = radius * 4 / 3 * Math.tan(sweep / n / 4);
+      spans.push(spanCoordinates(start, vectorPoint(start,a,reach), vectorPoint(end,b,-reach), end));
+    }
+  }
+  arc(cs, start.angle, tangent);
+  const before = vectorPoint(cs, tangent - side * Math.PI / 2, radius), after = vectorPoint(ce, tangent - side * Math.PI / 2, radius);
+  const length = rampDistance(before, after);
+  if (length > .01) spans.push(spanCoordinates(before, vectorPoint(before,tangent,length/3), vectorPoint(after,tangent,-length/3), after));
+  arc(ce, tangent, end.angle);
+  return spans;
+}
+
+function taggedHost(road) {
+  return road.rampHost || road.rampCurve ? road : { ...road, rampHost: { source: road, from: 0, to: 1 } };
+}
+
+function cutHost(network, road, cuts) {
+  const graphNodes = networkNodes(network);
+  const parts = splitRoad(taggedHost(road), graphNodes, cuts);
+  return remapSplitReferences({ ...network, roads: network.roads.flatMap(item => item === road ? parts : [item]) }, road, parts);
+}
+
+function rampAnchor(network, target, end, id) {
+  const hit = resolveRampTarget(network, target, end);
+  if (!hit) return;
+  const neighbor = (end === 'a') === target.forward ? hit.road.a : hit.road.b;
+  if (neighbor === id) return;
+  return { neighbor, lane: target.lane };
+}
+
+function cleanupRampNodes(network) {
+  let next = network;
+  for (const node of network.nodes.filter(item => item.rampCut)) {
+    const attached = next.roads.filter(road => road.a === node.id || road.b === node.id);
+    if (!attached.length) { next = { ...next, nodes: next.nodes.filter(n => n.id !== node.id) }; continue; }
+    if (attached.length !== 2 || node.movements || node.laneRules || node.control !== 'priority') continue;
+    const left = attached.find(road => road.b === node.id), right = attached.find(road => road.a === node.id);
+    if (!left?.rampHost || !right?.rampHost || !sameHost(rampHost(left), rampHost(right)) || left.rampHost.to !== right.rampHost.from) continue;
+    if (left.forward !== right.forward || left.backward !== right.backward || roadGrade(left) !== roadGrade(right) ||
+        (left.laneShift ?? 0) !== (right.laneShift ?? 0) || left.atB || right.atA) continue;
+    const source = rampHost(left), from = left.rampHost.from, to = right.rampHost.to;
+    const nodes = networkNodes(next);
+    if (!nodes.has(source.a) || !nodes.has(source.b)) continue;
+    const geometry = networkRoadGeometry(source, nodes);
+    const original = spanCoordinates(geometry.start, geometry.a, geometry.b, geometry.end);
+    const matches = part => {
+      const path = networkRoadGeometry(part, nodes);
+      const expected = rampSlice([original], part.rampHost.from, part.rampHost.to)[0];
+      return spanCoordinates(path.start,path.a,path.b,path.end).every((value, i) => Math.abs(value - expected[i]) < .1);
+    };
+    if (!matches(left) || !matches(right)) continue;
+    const merged = { ...source, a: left.a, b: right.b, forward: left.forward, backward: left.backward };
+    if (left.laneShift !== source.laneShift) merged.laneShift = left.laneShift;
+    if (roadGrade(left) !== roadGrade(source)) merged.grade = roadGrade(left);
+    for (const [field, part] of [['atA',left],['atB',right],['laneA',left],['laneB',right]]) {
+      if (part[field]) merged[field] = part[field]; else delete merged[field];
+    }
+    if (from !== 0 || to !== 1) {
+      merged.rampHost = { source, from, to };
+      merged.bend = 0;
+      if (source.controls || source.bend) merged.controls = rampSlice([original], from, to)[0].slice(2,6);
+    }
+    next = { ...next, nodes: next.nodes.filter(n => n.id !== node.id), roads: next.roads.flatMap(r => r === left ? [merged] : r === right ? [] : [r]) };
+    next = remapJunctionNeighbor(remapJunctionNeighbor(next, merged.a, node.id, merged.b), merged.b, node.id, merged.a);
+  }
+  return next;
+}
+
+export function removeRamp(network, id) {
+  const removed = network.roads.filter(road => road.rampId === id);
+  if (!removed.length) return network;
+  const ramps = { ...network.ramps };
+  delete ramps[id];
+  let next = excludingRoads(network, removed);
+  next = reconcileJunctionMovements({ ...next, ramps });
+  next = cleanupRampNodes(next);
+  if (!Object.keys(ramps).length) { next = { ...next }; delete next.ramps; }
+  return next;
+}
+
+function selfCrossing(samples) {
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i-1], b = samples[i], dx = b.x-a.x, dy = b.y-a.y;
+    for (let j = i + 2; j < samples.length; j++) {
+      const c = samples[j-1], d = samples[j];
+      if (Math.max(a.x,b.x) < Math.min(c.x,d.x) || Math.max(c.x,d.x) < Math.min(a.x,b.x) ||
+          Math.max(a.y,b.y) < Math.min(c.y,d.y) || Math.max(c.y,d.y) < Math.min(a.y,b.y)) continue;
+      const sx = d.x-c.x, sy = d.y-c.y, det = dx*sy-dy*sx;
+      if (Math.abs(det) < 1e-9) continue;
+      const t = ((c.x-a.x)*sy-(c.y-a.y)*sx)/det, u = ((c.x-a.x)*dy-(c.y-a.y)*dx)/det;
+      if (t >= -1e-8 && t <= 1+1e-8 && u >= -1e-8 && u <= 1+1e-8) return { x:a.x+dx*t,y:a.y+dy*t };
+    }
+  }
+}
+
+export function previewRamp(network, draft) {
+  if (!network || !draft?.start || !draft?.end) return { issue: 'Choose a departure lane and a receiving lane.' };
+  const grade = draft.grade ?? 0, shape = draft.shape ?? 'direct';
+  if (![-1,0,1].includes(grade) || !['direct','loop'].includes(shape)) return { issue: 'Choose a ramp shape and crossing level.' };
+  let next = draft.replace ? removeRamp(network, draft.replace) : network;
+  const endpoints = [resolveRampTarget(next, draft.start, 'a'), resolveRampTarget(next, draft.end, 'b')];
+  if (endpoints.some(hit => !hit)) return { issue: 'The selected host lane is unavailable. Choose its replacement.' };
+  const [start,end] = endpoints.map(hit => hit.pose);
+  const chord = rampDistance(start,end);
+  if (chord < 16) return { issue: 'Choose lanes farther apart.' };
+  const reach = draft.reach ?? (shape === 'loop' ? clamp(chord * .23, 17, 48) : chord * .45);
+  const startReach = draft.startReach ?? reach, endReach = draft.endReach ?? reach;
+  if (![reach,startReach,endReach].every(n => Number.isFinite(n) && n >= 2 && n <= 900)) return { issue: 'Keep the curve handle within reach of the map.' };
+  const direction = draft.direction === -1 ? -1 : 1;
+  const armA = vectorPoint(start,start.angle,startReach), armB = vectorPoint(end,end.angle,-endReach);
+  const spans = shape === 'loop' ? loopSpans(start,end,reach,direction) : [spanCoordinates(start,armA,armB,end)];
+  if (!spans.length) return { issue: 'Choose a larger loop.' };
+  const geometry = rampGeometry(spans), samples = geometry.samples;
+  const middle = pointOnCurve(geometry, geometry.length / 2);
+  const crossings = [];
+  const preview = { samples, crossings, handles: { start: geometry.a, end: geometry.b, middle }, reach, startReach, endReach };
+  const fail = (issue, point = middle) => ({ ...preview, issue, issuePoint: { x: point.x, y: point.y } });
+  const chordAngle = Math.atan2(end.y - start.y,end.x - start.x);
+  if (shape === 'direct' && [start,end].some(p => Math.cos(p.angle - chordAngle) < -.94)) return fail('This direct curve reverses against lane travel. Move an attachment or use a loop.');
+  const crossing = selfCrossing(samples);
+  if (crossing) return fail('This ramp crosses itself. Adjust the loop direction, reach, or endpoints.', crossing);
+  const tightest = samples.reduce((worst,p) => Math.abs(p.curvature) > Math.abs(worst.curvature) ? p : worst);
+  preview.warnings = geometry.radius < 11 ? [{ message: 'Tight curve: traffic will slow here.', x: tightest.x, y: tightest.y }] : [];
+  if (!Number.isFinite(geometry.speed) || geometry.radius < scale * networkLaneWidth / 2 / .92) return fail('This bend is too tight for its lane. Widen the curve.',tightest);
+  for (const p of samples) {
+    const obstacle = footprintAt(p, networkLaneWidth / 2 + 2, network);
+    if (obstacle) return fail(`This ramp would cross ${obstacle}. Move its curve or lane attachment.`,p);
+    if (p.x < 11 || p.x > 489 || p.y < 71 || p.y > 619) return fail('Keep the full ramp inside the map.',p);
+  }
+  const added = [...next.nodes], cuts = new Map();
+  const allocate = p => {
+    const node = { ...nextNetworkNode({ nodes: added },p), rampCut: true };
+    added.push(node);
+    return node;
+  };
+  const cut = (road,t,node) => {
+    const items = cuts.get(road) ?? [];
+    if (!items.some(item => item.node.id === node.id)) items.push({ t,node });
+    cuts.set(road,items);
+  };
+  const ids = endpoints.map(hit => {
+    if (hit.t < 1e-7) return hit.road.a;
+    if (hit.t > 1 - 1e-7) return hit.road.b;
+    const node = allocate(hit.center);
+    if (roadGrade(hit.road)) {
+      const path = networkRoadGeometry(hit.road,networkNodes(next));
+      node.rampElevation = roadElevationProfile(next,hit.road,path.length)(path.samples[Math.round(hit.t * 100)].length);
+    }
+    cut(hit.road,hit.t,node);
+    return node.id;
+  });
+  if (ids[0] === ids[1]) return fail('Choose two different attachment points.');
+  next = { ...next, nodes: added };
+  for (const [host, items] of cuts) next = cutHost(next,host,items);
+  const [laneA,laneB] = [rampAnchor(next,start,'a',ids[0]),rampAnchor(next,end,'b',ids[1])];
+  if (!laneA || !laneB) return fail('Choose lanes flowing in the right direction.');
+  let n = 1;
+  while (next.ramps?.[`ramp${n}`]) n++;
+  const rampId = draft.replace ?? `ramp${n}`;
+  const ramp = { a: ids[0], b: ids[1], forward: 1, backward: 0, bend: 0, rampId, rampCurve: spans, laneA, laneB, atB: 'yield', ...(grade ? { grade } : {}) };
+  const nodes = networkNodes(next), rampCuts = [], crossingCuts = new Map();
+  const height = roadElevationProfile(next,ramp,geometry.length);
+  const distanceAt = (path,t) => {
+    const i = clamp(t,0,1) * (path.samples.length - 1);
+    const lo = path.samples[Math.floor(i)], hi = path.samples[Math.ceil(i)];
+    return lo.length + (hi.length - lo.length) * (i % 1);
+  };
+  for (const [index, road] of next.roads.entries()) {
+    const other = networkRoadGeometry(road,nodes);
+    for (const hit of roadCrossings(ramp,road,nodes)) {
+      if (hit.overlap) return fail('The ramp overlaps another road. Move the curve away from it.');
+      if (hit.t < 1e-6 || hit.t > 1 - 1e-6) continue;
+      if (crossings.some(p => rampDistance(p,hit) < .15)) continue;
+      crossings.push({ x: hit.x, y: hit.y, grade, roadIndex: index });
+      if (grade !== roadGrade(road)) {
+        const otherHeight = roadElevationProfile(next,road,other.length);
+        if (Math.abs(height(distanceAt(geometry,hit.t)) - otherHeight(distanceAt(other,hit.u))) < 4.5) return fail('Give the ramps more room on both sides of the crossing.',hit);
+        continue;
+      }
+      if (grade) return fail('These roads cross at the same elevated level. Choose a different crossing level.',hit);
+      if (road.roundabout) return fail('Connect at an existing roundabout entry.');
+      const existing = hit.u < 1e-6 ? nodes.get(road.a) : hit.u > 1 - 1e-6 ? nodes.get(road.b) : undefined;
+      const node = existing ?? allocate(hit);
+      rampCuts.push({ node,t:hit.t });
+      if (!existing) {
+        const items = crossingCuts.get(road) ?? [];
+        items.push({ node,t:hit.u }); crossingCuts.set(road,items);
+      }
+    }
+  }
+  next = { ...next, nodes: [...next.nodes, ...added.filter(n => !next.nodes.some(existing => existing.id === n.id))] };
+  for (const [host, items] of crossingCuts) {
+    const live = next.roads.find(r => sameHost(r,host));
+    next = cutHost(next,live,items);
+  }
+  const insertShape = t => {
+    const point = pointOnCurve(geometry,distanceAt(geometry,t));
+    const node = allocate(point);
+    node.rampElevation = height(distanceAt(geometry,t));
+    next = { ...next, nodes: [...next.nodes,node] };
+    rampCuts.push({ node,t });
+  };
+  // SUMO clips a sweeping edge against both endpoint junction shapes. Short
+  // continuation edges keep the interior turns intact in the native network.
+  if (shape === 'loop') for (const fraction of [1/3,2/3]) {
+    const distance = geometry.length * fraction;
+    const pos = samples.findIndex(p => p.length >= distance);
+    const t = pos / (samples.length - 1);
+    if (!rampCuts.some(c => Math.abs(distanceAt(geometry,c.t)-distance) < 14 * scale)) insertShape(t);
+  }
+  // Parallel edges cannot be distinguished by the existing neighbor/lane
+  // movement key. Give each bypass its own continuation before export.
+  const ordered = [{ node:{id:ramp.a},t:0 }, ...[...rampCuts].sort((a,b) => a.t-b.t), { node:{id:ramp.b},t:1 }];
+  for (let i = 1; i < ordered.length; i++) {
+    const a = ordered[i-1], b = ordered[i];
+    if (next.roads.some(r => r.a === a.node.id && r.b === b.node.id || r.b === a.node.id && r.a === b.node.id)) insertShape((a.t+b.t)/2);
+  }
+  // A crossing farther along the same host may have changed the adjacent neighbor.
+  ramp.laneA = rampAnchor(next,start,'a',ids[0]);
+  ramp.laneB = rampAnchor(next,end,'b',ids[1]);
+  const roads = rampCuts.length ? splitRampCurve(ramp,rampCuts) : [ramp];
+  let offset = 0;
+  for (const road of roads) {
+    road.rampProfile = { length: geometry.length, offset, z0: networkNodeElevation(next,ramp.a), z1: networkNodeElevation(next,ramp.b) };
+    offset += rampGeometry(road.rampCurve).length;
+  }
+  const saved = { start, end, shape, grade, reach, direction, ...(draft.startReach !== undefined ? { startReach } : {}), ...(draft.endReach !== undefined ? { endReach } : {}) };
+  next = { ...next, roads: [...next.roads,...roads], ramps: { ...next.ramps, [rampId]: saved } };
+  for (const road of roads) if (road.laneA || road.laneB) next = refreshLaneConnections(next,road);
+  const checked = checkNetworkEdit(next,network.roads);
+  if (checked.issue) return fail(checked.issue);
+  return { ...preview, network: next, roads: next.roads.filter(road => road.rampId === rampId), rampId };
+}
+
+export function resizeRoadLanes(network, index, forward, backward) {
+  const road = network.roads[index];
+  if (!road || road.rampId || road.laneA || road.laneB || road.roundabout) return { issue: 'Select an ordinary road segment to change its lanes.' };
+  if (![forward,backward].every(n => Number.isInteger(n) && n >= 0 && n <= 4) || forward + backward < 1) return { issue: 'Choose one to four lanes per direction.' };
+  const resized = { ...road, forward, backward };
+  const laneDelta = (id, incoming) => (road.b === id) === incoming ? forward - road.forward : backward - road.backward;
+  const remapLane = (id, neighbor, lane, incoming) =>
+    (road.a === id && road.b === neighbor || road.b === id && road.a === neighbor) ? lane + laneDelta(id,incoming) : lane;
+  const ramps = { ...network.ramps };
+  let lost = false;
+  const roads = network.roads.map(item => {
+    if (item === road) return resized;
+    let result = item;
+    for (const [key,end,incoming] of [['laneA','a',true],['laneB','b',false]]) {
+      const anchor = item[key];
+      if (!anchor) continue;
+      const lane = remapLane(item[end],anchor.neighbor,anchor.lane,incoming);
+      if (lane < 0) lost = true;
+      if (lane === anchor.lane) continue;
+      result = { ...result, [key]: { ...anchor,lane } };
+      if (item.rampId) {
+        const field = incoming ? 'start' : 'end';
+        const draft = ramps[item.rampId];
+        ramps[item.rampId] = { ...draft, [field]: { ...draft[field],lane } };
+      }
+    }
+    return result;
+  });
+  if (lost) return { issue: 'This lane has an attachment. Move its ramp before removing the lane.' };
+  const nodes = network.nodes.map(node => {
+    if (node.id !== road.a && node.id !== road.b || !node.movements && !node.laneRules) return node;
+    const movements = node.movements?.map(m => ({ ...m, fromLane: remapLane(node.id,m.from,m.fromLane,true),
+      toLane: remapLane(node.id,m.to,m.toLane,false) })).filter(m => m.fromLane >= 0 && m.toLane >= 0);
+    const laneRules = Object.entries(node.laneRules ?? {}).flatMap(([key,rule]) => {
+      const [neighbor,index] = key.split(':');
+      const lane = remapLane(node.id,neighbor,Number(index),true);
+      return lane < 0 ? [] : [[incomingLaneKey(neighbor,lane),rule]];
+    });
+    return { ...node, movements, laneRules: laneRules.length ? Object.fromEntries(laneRules) : undefined };
+  });
+  const next = reconcileJunctionMovements({ ...network, nodes, roads, ...(network.ramps ? { ramps } : {}) });
+  const issue = roadShapeIssue(next,resized,networkNodes(next));
+  if (issue) return { issue };
+  return checkNetworkEdit(next,network.roads);
 }
