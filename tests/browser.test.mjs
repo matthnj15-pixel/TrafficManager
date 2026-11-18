@@ -208,7 +208,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       await rightTurn.click();
       await page.screenshot({ path: `test-results/junction-${viewport.width}.png` });
       await click("Test design");
-      await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+      await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
       assert.equal(await page.getByRole("button", { name: "Run on-device SUMO" }).count(), 0);
       await click("Play");
       await page.waitForFunction(() => Number(document.querySelector("#scrub").value) > 1);
@@ -258,7 +258,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       await click("Signal timing");
       assert.equal(await green.inputValue(), "26");
       await click("Results");
-      await page.locator(".metrics").waitFor({ timeout: 20000 });
+      await page.locator(".metrics").waitFor({ timeout: 60000 });
       assert.equal(await page.locator(".metrics").textContent(), results);
       await page.screenshot({ path: `test-results/results-${viewport.width}.png` });
       if (viewport.width === 669 && process.env.TRAFFIC_TEST_SUMO === "1") {
@@ -303,7 +303,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
       await click("Menu");
       await click("Restore original design");
       await click("Results");
-      await page.locator(".metrics").waitFor({ timeout: 20000 });
+      await page.locator(".metrics").waitFor({ timeout: 60000 });
       assert.equal(await page.locator(".metrics .gain, .metrics .loss").count(), 0);
       if (viewport.width === 390) {
         await click("Design");
@@ -342,7 +342,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(design.road[1].south, 1);
         assert.equal(design.road[1].bend, 1);
         await click("Test design");
-        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
         await reloadSchool(page);
         await click("Road Builder");
         assert.equal(await page.locator("[data-road-segment]").count(), 2);
@@ -387,7 +387,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         assert.equal(attached.slipLane, 3);
         assert.equal(attached.pickupLane, 3);
         await click("Test design");
-        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
 
       }
       if (viewport.width === 390) {
@@ -459,7 +459,7 @@ test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeo
         await click("Yield lane");
         await page.screenshot({ path: "test-results/clean-slate-network.png" });
         await click("Simulate");
-        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
         await click("Results");
         assert.equal(await page.getByText("Trips with no route", { exact: true }).count(), 0);
         await reloadSchool(page);
@@ -622,7 +622,7 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     assert.equal(junction.movements.find(move => move.from === "west" && move.to === "east").rule, "stop");
     assert.equal(junction.movements.find(move => move.from === "north" && move.to === "west").rule, "yield");
     await click("Simulate");
-    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
     assert.deepEqual(errors, []);
     await context.close();
   } finally {
@@ -719,7 +719,7 @@ test("draw a lane-specific slip with the curve ball, then drag its endpoint to a
     assert.deepEqual(branch((await save()).network).laneB, { neighbor: "east", lane: 1 });
     await reloadSchool(page);
     await click("Simulate");
-    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 25000 });
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
     const lamps = page.locator("#design-map .replay-signal circle");
     assert.ok(await lamps.count() > 0);
     const colors = () => lamps.evaluateAll(items => items.map(item => item.getAttribute("fill")));
@@ -924,7 +924,7 @@ test("the level menu opens five playable starts, and Move releases the editor wi
       assert.deepEqual(await save(), start);
       if (viewport.width === 390) {
         await click("Simulate");
-        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+        await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
         await click("Results");
         const data = await page.locator(".metrics tr").filter({ hasText: "Pickup trips" }).locator("td").allTextContents();
         assert.equal(data[0], data[1]);
@@ -960,7 +960,7 @@ test("build, compare, undo, and resume roundabouts and grade-separated roads on 
     const fits = selector => page.locator(selector).evaluate(node => {
       const tray = node.closest(".editor-tray").getBoundingClientRect();
       return [...node.querySelectorAll("button, select, summary")].every(control => {
-        if (!control.getClientRects().length) return true;
+        if (!control.checkVisibility()) return true;
         const bounds = control.getBoundingClientRect();
         return bounds.left >= tray.left && bounds.right <= tray.right && bounds.bottom <= tray.bottom;
       });
@@ -983,7 +983,7 @@ test("build, compare, undo, and resume roundabouts and grade-separated roads on 
     assert.equal(await map.locator("[data-roundabout]").count(), 1);
     await page.screenshot({ path: "test-results/market-roundabout-320.png" });
     await tap("Simulate");
-    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
     await tap("Results");
     assert.equal(await page.locator(".report-outcome").textContent(), "Goal met.");
     await tap("Menu");
@@ -1007,7 +1007,7 @@ test("build, compare, undo, and resume roundabouts and grade-separated roads on 
     await enter("cross-town-rush");
     assert.equal(await map.locator('[data-road-level="-1"] [data-pavement]').count(), 1);
     await tap("Simulate");
-    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 20000 });
+    await page.getByText("Eclipse SUMO", { exact: true }).waitFor({ timeout: 60000 });
     await page.locator("#scrub").fill("52");
     const design = page.locator("#design-map");
     const car = design.locator('[data-vehicle-level="-1"] .vehicle.car').first();

@@ -2322,7 +2322,7 @@ function renderInspector() {
         ["Cross-street trips", a.crossFinished, b.crossFinished, "", -1]] : []),
       ...(level.metric === "northFinished" ? [["North highway trips", a.northFinished, b.northFinished, "", -1]] : []),
       ["All trips", a.finished, b.finished, "", -1],
-      ...(design.slipStart || design.network?.roads.some(road => road.laneA || road.laneB) ?
+      ...(design.slipStart || design.network?.roads.some(road => !road.rampId && (road.laneA || road.laneB)) ?
         [["Slip lane trips", a.slipFinished, b.slipFinished, "", -1]] : []),
       ...(b.unserved ? [["Trips with no route", a.unserved, b.unserved, "", 1]] : []),
       ["Collisions", a.collisions, b.collisions, "", 1]
