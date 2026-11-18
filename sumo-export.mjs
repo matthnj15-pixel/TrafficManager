@@ -49,13 +49,33 @@ export function readSumoComparison(data, design, levelId) {
     throw new Error("SUMO returned results for a different road design.");
   }
   const nonnegative = value => Number.isFinite(value) && value >= 0;
+  const count = value => Number.isInteger(value) && value >= 0;
+  const peak = row => row && nonnegative(row.peakQueue) && count(row.peakFrame) && row.peakFrame <= duration / step;
+  const peakLane = row => peak(row) && typeof row.peakLane === "string";
+  const validMovements = rows => Array.isArray(rows) && rows.every(row => row &&
+    typeof row.from === "string" && typeof row.to === "string" &&
+    [row.demand, row.scheduled, row.entered, row.completed, row.unserved].every(count) &&
+    row.demand === row.scheduled + row.unserved && row.completed <= row.entered && row.entered <= row.scheduled &&
+    nonnegative(row.averageDelay));
+  const validRamps = rows => Array.isArray(rows) && rows.every(row => peakLane(row) &&
+    [row.id, row.from, row.to].every(value => typeof value === "string") &&
+    [row.scheduled, row.entered, row.completed].every(count) && row.completed <= row.entered && row.entered <= row.scheduled &&
+    Array.isArray(row.lanes) && row.lanes.every(lane => peak(lane) && typeof lane.lane === "string"));
+  const validWeaves = rows => Array.isArray(rows) && rows.every(row => peakLane(row) &&
+    [row.id, row.fromRamp, row.toRamp].every(value => typeof value === "string") && nonnegative(row.distance));
   const validMarker = marker => marker && Number.isInteger(marker.id) && marker.id >= 0 &&
     ["car", "bus", "pickup"].includes(marker.kind) && [marker.x, marker.y, marker.angle].every(Number.isFinite) &&
     (marker.grade === undefined || [-1, 1].includes(marker.grade)) &&
+    (marker.rampId === undefined || typeof marker.rampId === "string") &&
     nonnegative(marker.speed) && typeof marker.reason === "string" && typeof marker.zone === "string";
   for (const run of [data.original, data.edited]) {
+    const hasRamps = run.design.network?.roads.some(road => road.rampId);
+    const { movements, ramps, weaves } = run.results ?? {};
     if (!run.results || !["finished", "waiting", "longestQueue", "peakFrame", "busDelay", "crossDelay", "crossFinished", "northFinished", "pickupFinished", "slipFinished", "unserved", "collisions"].every(key => nonnegative(run.results[key])) ||
       !Number.isInteger(run.results.peakFrame) || run.results.peakFrame > duration / step ||
+      ((hasRamps || movements !== undefined) && !validMovements(movements)) ||
+      ((hasRamps || ramps !== undefined) && !validRamps(ramps)) ||
+      ((hasRamps || weaves !== undefined) && !validWeaves(weaves)) ||
       !Array.isArray(run.frames) || run.frames.length !== duration / step + 1 ||
       !run.frames.every(frame => frame && ["avenue", "avenue-yellow", "cross", "cross-yellow", "all-red"].includes(frame.phase) && typeof frame.queueZone === "string" && nonnegative(frame.finished) &&
         nonnegative(frame.longestQueue) && Array.isArray(frame.markers) && frame.markers.length <= levelTripsCount &&

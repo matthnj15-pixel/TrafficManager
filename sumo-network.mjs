@@ -291,117 +291,235 @@ export function sumoInputs(request, layout) {
   };
 }
 
-function freeNetworkInputs(request, network) {
+function freeNetworkGraph(network) {
   const nodes = networkNodes(network);
   const terminals = networkTerminals(network);
   const outgoing = new Map();
   const incoming = new Map();
-  const edges = [], connections = [];
+  const edges = [];
   const transitions = new Map();
-  const explicitJunctions = new Set();
-  const laneDrops = new Set(network.nodes.filter(node => isLaneDrop(network, node)).map(node => node.id));
-  const usesApproachRules = node => node.control === "priority" || !node.control;
-  const shape = points => points.map(point => [point.x * request.scale, -point.y * request.scale,
-    ...(point.z === undefined ? [] : [point.z])].map(value => value.toFixed(4)).join(",")).join(" ");
-  const addEdge = (id, from, to, points, count, speed, length, rule = "default", laneShapes, roundabout = false) => {
+  const addEdge = edge => {
+    const { from, to, count } = edge;
     if (!count) return;
-    const control = usesApproachRules(nodes.get(to)) ? rule : "default";
-    const priority = roundabout ? 4 : { default: 2, priority: 3, yield: 1, stop: 1 }[control];
-    if (control !== "default") explicitJunctions.add(to);
-    const edge = { id, from, to, count, length };
     if (!outgoing.has(from)) outgoing.set(from, []);
     if (!incoming.has(to)) incoming.set(to, []);
     outgoing.get(from).push(edge);
     incoming.get(to).push(edge);
-    const edgeXml = element("edge", { id, from, to, shape: shape(points), speed, priority, numLanes: count,
-      width: networkLaneWidth * request.scale, spreadType: "right" });
-    edges.push(laneShapes ? edgeXml.slice(0, -2) + ">" +
-      laneShapes.map((path, index) => element("lane", { index, shape: shape(path) })).join("") + "</edge>" : edgeXml);
+    edges.push(edge);
   };
   for (const terminal of Object.values(terminals)) {
     const { id, x, y, dx, dy } = terminal;
     const boundary = { id: `${id}-boundary`, x: x + dx, y: y + dy };
     nodes.set(boundary.id, boundary);
-    addEdge(`${id}-in`, boundary.id, id, [boundary, terminal], 1, 9, Math.hypot(dx, dy));
-    addEdge(`${id}-out`, id, boundary.id, [terminal, boundary], 1, 9, Math.hypot(dx, dy));
+    const length = Math.hypot(dx, dy);
+    addEdge({ id: `${id}-in`, from: boundary.id, to: id, count: 1, speed: 9, length });
+    addEdge({ id: `${id}-out`, from: id, to: boundary.id, count: 1, speed: 9, length });
   }
   for (const [index, road] of network.roads.entries()) {
     const geometry = networkRoadGeometry(road, nodes);
     const anchored = laneAnchoredCurve(road, network, nodes, geometry);
     const { speed, length } = anchored ?? geometry;
-    const height = roadElevationProfile(network, road, geometry.length);
-    const elevations = samples => {
-      const points = trafficShapeSamples(samples);
-      return roadGrade(road) ? points.map(point => ({ ...point, z: height(point.length) })) : points;
-    };
-    const points = elevations(geometry.samples);
-    const laneShapes = (forward, count) => Array.from({ length: count }, (_, lane) =>
-      elevations(networkLaneSamples(road, network, nodes, forward, lane, geometry)));
-    addEdge(`road-${index}-f`, road.a, road.b, points, road.forward, speed, length, road.atB, laneShapes(true, road.forward), !!road.roundabout);
-    addEdge(`road-${index}-b`, road.b, road.a, [...points].reverse(), road.backward, speed, length, road.atA, laneShapes(false, road.backward));
+    addEdge({ id: `road-${index}-f`, index, from: road.a, to: road.b, count: road.forward, forward: true, road, geometry, speed, length });
+    addEdge({ id: `road-${index}-b`, index, from: road.b, to: road.a, count: road.backward, forward: false, road, geometry, speed, length });
   }
   for (const [id, arrivals] of incoming) {
-    const node = nodes.get(id);
-    const moves = node.control && junctionMovements(network, node);
-    const legs = laneDrops.has(id) ? new Map(junctionLegs(network, id, nodes).map(leg => [leg.neighbor, leg])) : undefined;
-    if (node.control === "yield" || usesApproachRules(node) && moves?.some(move => move.rule !== "default")) explicitJunctions.add(id);
+    if (id.endsWith("-boundary")) continue;
+    const moves = nodes.get(id).control && junctionMovements(network, nodes.get(id));
     for (const from of arrivals) {
-      if (id.endsWith("-boundary")) continue;
-      const exits = [];
-      for (const to of outgoing.get(id) ?? []) {
-        if (from.from === to.to) continue;
+      const exits = (outgoing.get(id) ?? []).flatMap(to => {
+        if (from.from === to.to) return [];
         const links = moves ? moves.filter(move => move.from === from.from && move.to === to.to) :
           Array.from({ length: from.count }, (_, fromLane) => ({
             fromLane, toLane: Math.min(to.count - 1, fromLane + Math.max(0, to.count - from.count))
           }));
-        if (links.length) exits.push(to);
-        for (const { fromLane, toLane } of links) {
-          const fromLeg = legs?.get(from.from), toLeg = legs?.get(to.to);
-          const taper = fromLeg && toLeg && laneDropTaper(network, fromLeg.road, nodes, !fromLeg.atA).includes(fromLane) ?
-            shape(networkMergeSamples(network, fromLeg, toLeg, nodes, fromLane, toLane)) : undefined;
-          connections.push(element("connection", {
-            from: from.id, to: to.id, fromLane, toLane, ...(taper ? { shape: taper } : {})
-          }));
-        }
-      }
-      if (moves && !exits.length) connections.push(element("connection", { from: from.id }));
+        return links.map(link => ({ ...link, to }));
+      });
       transitions.set(from.id, exits);
     }
   }
+  return { nodes, terminals, edges, outgoing, transitions };
+}
 
-  // Search by incoming edge so routes respect one-way segments and exclude U-turns.
-  const routeCache = new Map();
-  function routeBetween(origin, destination) {
-    const first = outgoing.get(`${origin}-boundary`)?.[0];
-    if (!first || !terminals[destination]) return;
-    const pending = [{ edge: first, distance: 0, path: [first.id] }];
+function routeBetween(graph, origin, destination) {
+  const first = graph.outgoing.get(`${origin}-boundary`)?.[0];
+  if (!first || !graph.terminals[destination]) return;
+  // Each junction transition names the sending and receiving lanes. A vehicle
+  // can change lanes within an edge, with SUMO deciding where it can do so.
+  const pending = [{ edge: first, lane: 0, distance: 0, changes: 0, path: [first] }];
+  const visited = new Set();
+  while (pending.length) {
+    pending.sort((a, b) => b.distance - a.distance || b.changes - a.changes);
+    const { edge, lane, distance, changes, path } = pending.pop();
+    const key = `${edge.id}_${lane}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (edge.id === `${destination}-out`) return path;
+    for (const link of graph.transitions.get(edge.id) ?? []) {
+      if (path.includes(link.to)) continue;
+      pending.push({ edge: link.to, lane: link.toLane, distance: distance + link.to.length,
+        changes: changes + Math.abs(lane - link.fromLane), path: [...path, link.to] });
+    }
+  }
+}
+
+function demandRoutes(trips, graph) {
+  const movements = new Map();
+  for (const trip of trips) {
+    const [from, to] = tripTerminals(trip);
+    const id = `${from}-to-${to}`;
+    if (!movements.has(id)) movements.set(id, { from, to, trips: [], path: graph && routeBetween(graph, from, to) });
+    movements.get(id).trips.push(trip);
+  }
+  return movements;
+}
+
+export function networkDemandPreview(network, trips, previousNetwork = network) {
+  const routes = demandRoutes(trips, freeNetworkGraph(network));
+  const previous = previousNetwork === network ? routes : demandRoutes(trips, freeNetworkGraph(previousNetwork));
+  let scheduled = 0, lost = 0;
+  const movements = [...routes].map(([id, { from, to, trips, path }]) => {
+    const count = path ? trips.length : 0;
+    const loss = !path && previous.get(id)?.path ? trips.length : 0;
+    scheduled += count;
+    lost += loss;
+    return { from, to, demand: trips.length, scheduled: count, unserved: trips.length - count, lost: loss };
+  });
+  return { demand: trips.length, scheduled, unserved: trips.length - scheduled, lost, movements };
+}
+
+export function crossingDemandPreview(network, trips, nodeId, axes) {
+  const routes = demandRoutes(trips, freeNetworkGraph(network));
+  const axis = neighbor => axes.findIndex(pair => pair.includes(neighbor));
+  let affected = 0;
+  const movements = [];
+  for (const { from, to, trips, path } of routes.values()) {
+    const removed = path?.some((edge, index) => {
+      if (edge.to !== nodeId || !path[index + 1]) return false;
+      const approach = axis(edge.from), departure = axis(path[index + 1].to);
+      return approach >= 0 && departure >= 0 && approach !== departure;
+    });
+    if (!removed) continue;
+    affected += trips.length;
+    movements.push({ from, to, demand: trips.length, affected: trips.length });
+  }
+  return { affected, movements };
+}
+
+export function rampDemandPreview(network, trips, rampId) {
+  const graph = freeNetworkGraph(network);
+  let scheduled = 0;
+  const movements = [];
+  for (const { from, to, trips, path } of demandRoutes(trips, graph).values()) {
+    if (!rampId || !path?.some(edge => edge.road?.rampId === rampId)) continue;
+    scheduled += trips.length;
+    movements.push({ from, to, demand: trips.length, scheduled: trips.length });
+  }
+  return { scheduled, movements, weaves: findNetworkWeaves(network, graph)
+    .filter(weave => weave.fromRamp === rampId || weave.toRamp === rampId) };
+}
+
+export function networkWeaves(network) {
+  return findNetworkWeaves(network, freeNetworkGraph(network));
+}
+
+function findNetworkWeaves(network, { edges, transitions, nodes }) {
+  const shortWeaveDistance = 80;
+  const weaves = new Map();
+  const hostRoad = edge => edge.road && !edge.road.rampId && !edge.road.laneA && !edge.road.laneB;
+  const heading = (edge, start) => {
+    const { samples } = edge.geometry;
+    return (start === edge.forward ? samples[0] : samples.at(-1)).angle + (edge.forward ? 0 : Math.PI);
+  };
+  for (const ramp of edges) {
+    if (!ramp.road?.rampId || !ramp.road.laneB || !ramp.forward) continue;
+    const fromRamp = ramp.road.rampId;
+    const pending = (transitions.get(ramp.id) ?? []).filter(link => hostRoad(link.to)).map(link => ({
+      edge: link.to, lane: link.toLane, distance: link.to.length, path: []
+    }));
     const visited = new Set();
     while (pending.length) {
       pending.sort((a, b) => b.distance - a.distance);
-      const { edge, distance, path } = pending.pop();
-      if (visited.has(edge.id)) continue;
-      visited.add(edge.id);
-      if (edge.id === `${destination}-out`) return path;
-      if (edge.to.endsWith("-boundary")) continue;
-      for (const next of transitions.get(edge.id) ?? []) {
-        if (!visited.has(next.id)) {
-          pending.push({ edge: next, distance: distance + next.length, path: [...path, next.id] });
+      const { edge, lane, distance, path } = pending.pop();
+      const key = `${edge.id}_${lane}`;
+      if (distance > shortWeaveDistance || visited.has(key)) continue;
+      visited.add(key);
+      const host = [...path, { edge, lane }];
+      for (const link of transitions.get(edge.id) ?? []) {
+        const toRamp = link.to.road?.rampId;
+        if (toRamp && fromRamp !== toRamp && link.to.road.laneA) {
+          const id = `${fromRamp}-${toRamp}`;
+          if (weaves.has(id) && weaves.get(id).distance <= distance) continue;
+          weaves.set(id, { id, fromRamp, toRamp, distance, fromLane: host[0].lane, toLane: link.fromLane,
+            roadIndices: host.map(({ edge }) => edge.index),
+            hostLanes: host.map(({ edge, lane }) => ({ roadIndex: edge.index, forward: edge.forward, lane })),
+            samples: host.flatMap(({ edge, lane }) => trafficShapeSamples(networkLaneSamples(
+              edge.road, network, nodes, edge.forward, lane, edge.geometry))) });
+        } else if (hostRoad(link.to) && link.fromLane === lane && Math.cos(heading(edge, false) - heading(link.to, true)) >= .72) {
+          pending.push({ edge: link.to, lane: link.toLane, distance: distance + link.to.length, path: host });
         }
       }
     }
   }
+  return [...weaves.values()];
+}
+
+function freeNetworkInputs(request, network) {
+  const graph = freeNetworkGraph(network);
+  const { nodes, edges, transitions } = graph;
+  const explicitJunctions = new Set();
+  const laneDrops = new Map(network.nodes.filter(node => isLaneDrop(network, node)).map(node => [
+    node.id, new Map(junctionLegs(network, node.id, nodes).map(leg => [leg.neighbor, leg]))
+  ]));
+  const usesApproachRules = node => node.control === "priority" || !node.control;
+  const shape = points => points.map(point => [point.x * request.scale, -point.y * request.scale,
+    ...(point.z === undefined ? [] : [point.z])].map(value => value.toFixed(4)).join(",")).join(" ");
+  const edgeXml = edges.map(({ id, from, to, count, speed, road, geometry, forward }) => {
+    const rule = forward ? road?.atB : road?.atA;
+    const control = usesApproachRules(nodes.get(to)) ? rule ?? "default" : "default";
+    const priority = forward && road?.roundabout ? 4 : { default: 2, priority: 3, yield: 1, stop: 1 }[control];
+    if (control !== "default") explicitJunctions.add(to);
+    const height = road && roadElevationProfile(network, road, geometry.length);
+    const elevations = samples => {
+      const points = trafficShapeSamples(samples);
+      return road && (road.rampId || roadGrade(road)) ? points.map(point => ({ ...point, z: height(point.length) })) : points;
+    };
+    const centerline = road ? elevations(geometry.samples) : [nodes.get(from), nodes.get(to)];
+    const points = road && !forward ? [...centerline].reverse() : centerline;
+    const tag = element("edge", { id, from, to, shape: shape(points), speed, priority, numLanes: count,
+      width: networkLaneWidth * request.scale, spreadType: "right" });
+    if (!road) return tag;
+    const lanes = Array.from({ length: count }, (_, index) => element("lane", { index,
+      shape: shape(elevations(networkLaneSamples(road, network, nodes, forward, index, geometry))) }));
+    return tag.slice(0, -2) + ">" + lanes.join("") + "</edge>";
+  });
+  const connections = edges.flatMap(from => {
+    const node = nodes.get(from.to);
+    const links = transitions.get(from.id) ?? [];
+    if (node.control === "yield" || usesApproachRules(node) && links.some(link => link.rule && link.rule !== "default")) {
+      explicitJunctions.add(node.id);
+    }
+    if (!links.length && node.control) return [element("connection", { from: from.id })];
+    const legs = laneDrops.get(node.id);
+    const fromLeg = legs?.get(from.from);
+    const drops = fromLeg ? laneDropTaper(network, fromLeg.road, nodes, !fromLeg.atA) : [];
+    return links.map(({ to, fromLane, toLane }) => {
+      const toLeg = legs?.get(to.to);
+      const taper = toLeg && drops.includes(fromLane) ?
+        shape(networkMergeSamples(network, fromLeg, toLeg, nodes, fromLane, toLane)) : undefined;
+      return element("connection", { from: from.id, to: to.id, fromLane, toLane, ...(taper ? { shape: taper } : {}) });
+    });
+  });
+  const movements = demandRoutes(request.trips, graph);
   const routes = Object.entries(request.types).map(([id, dimensions]) =>
     element("vType", { id, ...dimensions, accel: id === "bus" ? 1.05 : 2.1, decel: 4.5,
       sigma: 0, minGap: 2, maxSpeed: 12, speedFactor: 1, speedDev: 0 }));
+  for (const [id, { path }] of movements) {
+    if (path) routes.push(element("route", { id, edges: path.map(edge => edge.id).join(" ") }));
+  }
   for (const trip of request.trips) {
     const [origin, destination] = tripTerminals(trip);
     const id = `${origin}-to-${destination}`;
-    if (!routeCache.has(id)) {
-      const path = routeBetween(origin, destination);
-      routeCache.set(id, path);
-      if (path) routes.push(element("route", { id, edges: path.join(" ") }));
-    }
-    if (routeCache.get(id)) routes.push(element("vehicle", {
+    if (movements.get(id).path) routes.push(element("vehicle", {
       id: trip.id, type: trip.kind, route: id, depart: trip.time.toFixed(2), departSpeed: 0, departPos: "base", departLane: "best"
     }));
   }
@@ -416,7 +534,7 @@ function freeNetworkInputs(request, network) {
         type: explicit ? "priority" : laneDrops.has(node.id) ? "zipper" : node.control === "priority" ? "right_before_left" : node.control ?? "priority",
         ...(explicit ? { rightOfWay: "edgePriority" } : {}) });
     })),
-    "edges.xml": wrap("edges", [...edges, ...loops.map(roads => element("roundabout", {
+    "edges.xml": wrap("edges", [...edgeXml, ...loops.map(roads => element("roundabout", {
       edges: roads.map(road => `road-${network.roads.indexOf(road)}-f`).join(" ")
     }))]),
     "connections.xml": wrap("connections", connections),
@@ -533,7 +651,7 @@ function queueZoneFor(lane, network) {
     if (!road) return "Road junction";
     const [from, to] = segment[2] === "f" ? [road.a, road.b] : [road.b, road.a];
     const label = id => terminals[id]?.name ?? `Junction ${id.slice(1)}`;
-    const structure = road.roundabout ? "Roundabout" : road.grade === 1 ? "Overpass" : road.grade === -1 ? "Underpass" : road.laneA || road.laneB ? "Slip lane" : "";
+    const structure = road.rampId ? "Ramp" : road.roundabout ? "Roundabout" : road.grade === 1 ? "Overpass" : road.grade === -1 ? "Underpass" : road.laneA || road.laneB ? "Slip lane" : "";
     return `${structure ? `${structure} · ` : ""}${label(from)} → ${label(to)}`;
   }
   const junction = /^:(j\d+)_/.exec(lane);
@@ -592,9 +710,46 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   const crossDelay = averageDelay(trip => trip.origin === "cross");
   const finishedFrom = origin => reports.filter(report => Number(report.arrival) >= 0 && demand.get(report.id).origin === origin).length;
   const northFinished = reports.filter(report => Number(report.arrival) >= 0 && tripTerminals(demand.get(report.id))[1] === "north").length;
+  const graph = layout.design.network && freeNetworkGraph(layout.design.network);
+  const routedDemand = graph && demandRoutes(request.trips, graph);
+  const vehicleTags = graph ? [] : [...sumoInputs(request, layout)["routes.xml"].matchAll(/<vehicle\s[^>]*>/g)];
+  const scheduledTrips = new Set(routedDemand ?
+    [...routedDemand.values()].flatMap(({ path, trips }) => path ? trips.map(trip => String(trip.id)) : []) :
+    vehicleTags.map(([tag]) => attributes(tag).id));
+  const reportByTrip = new Map(reports.map(report => [report.id, report]));
+  const completed = id => Number(reportByTrip.get(id)?.arrival) >= 0;
+  const entered = id => Number(reportByTrip.get(id)?.depart) >= 0;
+  const movementResults = [...(routedDemand ?? demandRoutes(request.trips)).values()]
+    .map(({ from, to, trips }) => {
+      const ids = trips.map(trip => String(trip.id));
+      const scheduled = ids.filter(id => scheduledTrips.has(id)).length;
+      const observed = ids.filter(entered);
+      return { from, to, demand: ids.length, scheduled, entered: observed.length,
+        completed: ids.filter(completed).length, unserved: ids.length - scheduled,
+        averageDelay: observed.reduce((sum, id) => sum + delay(reportByTrip.get(id)), 0) / Math.max(1, observed.length) };
+    });
+  const ramps = new Map(), rampByLane = new Map(), laneReports = new Map();
+  for (const edge of graph?.edges ?? []) {
+    const id = edge.road?.rampId;
+    if (!id) continue;
+    if (!ramps.has(id)) ramps.set(id, { id, from: edge.from, to: edge.to, lanes: new Set(), trips: new Set(), scheduled: 0 });
+    const ramp = ramps.get(id);
+    if (edge.road.laneA) ramp.from = edge.from;
+    if (edge.road.laneB) ramp.to = edge.to;
+    for (let index = 0; index < edge.count; index++) {
+      const lane = `${edge.id}_${index}`;
+      rampByLane.set(lane, ramp);
+      ramp.lanes.add(lane);
+    }
+  }
+  for (const { trips, path } of routedDemand?.values() ?? []) {
+    const ids = new Set((path ?? []).flatMap(edge => edge.road?.rampId ? [edge.road.rampId] : []));
+    for (const id of ids) ramps.get(id).scheduled += trips.length;
+  }
+  const weaves = graph ? findNetworkWeaves(layout.design.network, graph) : [];
   const slipEdges = new Set(["slip-road"]);
   layout.design.network?.roads.forEach((road, index) => {
-    if (!road.laneA && !road.laneB) return;
+    if (road.rampId || !road.laneA && !road.laneB) return;
     if (road.forward) slipEdges.add(`road-${index}-f`);
     if (road.backward) slipEdges.add(`road-${index}-b`);
   });
@@ -626,13 +781,17 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
       if (slipEdges.has(car.lane.slice(0, car.lane.lastIndexOf("_")))) slipTrips.add(Number(car.id));
       const zone = zoneForLane(car.lane);
       const grade = roadGrades.get(car.lane) ?? (Math.abs(Number(car.z)) > .5 ? Math.sign(Number(car.z)) : 0);
+      const ramp = rampByLane.get(car.lane);
+      if (ramp) ramp.trips.add(car.id);
       if (reason) queues.set(car.lane, (queues.get(car.lane) ?? 0) + length + 2);
       markers.push({ id: Number(car.id), kind: car.type, speed, reason, zone, lane: car.lane, angle: +angle.toFixed(5), ...(grade ? { grade } : {}),
+        ...(ramp ? { rampId: ramp.id } : {}),
         x: +((Number(car.x) - Math.cos(angle) * length / 2) / request.scale).toFixed(4),
         y: +((-Number(car.y) - Math.sin(angle) * length / 2) / request.scale).toFixed(4) });
     }
     let queueLane = "", queue = 0;
     for (const [lane, length] of queues) {
+      if (length > (laneReports.get(lane)?.peakQueue ?? 0)) laneReports.set(lane, { lane, peakQueue: length, peakFrame: frames.length });
       if (length <= queue) continue;
       queue = length;
       queueLane = lane;
@@ -645,8 +804,20 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
       queueZone: queueLane ? zoneForLane(queueLane) : "" });
   }
   if (frames.length !== Math.round(request.duration / request.step) + 1) throw new Error("SUMO returned an incomplete simulation.");
+  const lanePeak = lanes => [...lanes].reduce((peak, lane) => {
+    const candidate = laneReports.get(lane);
+    return candidate?.peakQueue > peak.peakQueue ?
+      { peakQueue: candidate.peakQueue, peakFrame: candidate.peakFrame, peakLane: lane } : peak;
+  }, { peakQueue: 0, peakFrame: 0, peakLane: "" });
+  const rampResults = [...ramps.values()].map(({ id, from, to, scheduled, trips, lanes }) =>
+    ({ id, from, to, scheduled, entered: trips.size, completed: [...trips].filter(completed).length, ...lanePeak(lanes),
+      lanes: [...lanes].map(lane => laneReports.get(lane) ?? { lane, peakQueue: 0, peakFrame: 0 }) }));
+  const weaveResults = weaves.map(({ id, fromRamp, toRamp, distance, hostLanes }) =>
+    ({ id, fromRamp, toRamp, distance, ...lanePeak(hostLanes.map(({ roadIndex, forward, lane }) =>
+      `road-${roadIndex}-${forward ? "f" : "b"}_${lane}`)) }));
   return { design: layout.design, frames, signals: signalReplay(network, signalOutput, request.scale), results: { finished, waiting: request.trips.length - finished,
     longestQueue, peakFrame, busDelay, crossDelay, northFinished,
     slipFinished: reports.filter(report => Number(report.arrival) >= 0 && slipTrips.has(Number(report.id))).length,
-    unserved: request.trips.length - [...sumoInputs(request, layout)["routes.xml"].matchAll(/<vehicle /g)].length, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"), collisions: [...collisions.matchAll(/<collision\s/g)].length } };
+    unserved: request.trips.length - scheduledTrips.size, crossFinished: finishedFrom("cross"), pickupFinished: finishedFrom("ramp"),
+    collisions: [...collisions.matchAll(/<collision\s/g)].length, movements: movementResults, ramps: rampResults, weaves: weaveResults } };
 }
