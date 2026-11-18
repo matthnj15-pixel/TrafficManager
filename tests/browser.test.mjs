@@ -9,8 +9,9 @@ import { sumoRequest } from "../sumo-export.mjs";
 import { baseline } from "../model.mjs";
 import { after } from "node:test";
 
-const url = "http://127.0.0.1:4183";
-const server = spawn("python3", ["-m", "http.server", "4183", "--bind", "127.0.0.1"], { stdio: "ignore" });
+const port = process.env.TRAFFIC_TEST_PORT ?? "4183";
+const url = `http://127.0.0.1:${port}`;
+const server = spawn("python3", ["-m", "http.server", port, "--bind", "127.0.0.1"], { stdio: "ignore" });
 after(() => server.kill());
 const enterSchool = page => page.locator('[data-level="school-pickup"]').click();
 const reloadSchool = async page => {
