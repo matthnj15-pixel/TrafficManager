@@ -391,6 +391,23 @@ details summary {
 }
 details summary::-webkit-details-marker { display: none; }
 .draft-accessory { position: relative; }
+.lane-preset-menu summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  width: max-content;
+  min-width: 75px;
+  border: 1px solid #b7d6cb38;
+  border-radius: 9px;
+  padding-inline: 8px;
+  font-size: .77rem;
+  font-weight: 650;
+}
+.lane-preset-menu summary svg { width: 13px; height: 13px; }
+.lane-preset-menu[open] > div { left: 0; right: auto; grid-template-columns: repeat(2, minmax(83px, 1fr)); }
+.lane-preset-menu button { display: grid; justify-items: center; gap: 3px; padding: 3px; border-radius: 8px; }
+.lane-preset-menu button svg { display: block; width: 72px; height: 33px; border-radius: 5px; }
 .intersection-options { position: relative; }
 .junction-signs { display: flex; gap: 4px; }
 .junction-signs button { flex: 1; min-width: 0; padding: 0; display: grid; place-items: center; }
