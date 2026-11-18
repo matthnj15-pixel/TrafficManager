@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "python3 -m http.server 4173 --bind 127.0.0.1",
-    "test": "node --test tests/model.test.mjs",
+    "test": "node --test tests/model.test.mjs tests/ramp-geometry.test.mjs tests/interchanges.test.mjs",
     "test:sumo": "node --test tests/sumo.test.mjs",
     "test:browser": "node --test tests/browser.test.mjs"
   },
