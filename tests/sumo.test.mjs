@@ -4,9 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, buildNetworkRoundabout, connectNetworkRoad, duration, junctionMovements, levels, levelStart, separateNetworkJunction, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, world } from "../model.mjs";
-import { configureJunctions, netconvertArgs, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
+import { avenueSegments, baseline, buildNetworkRoundabout, connectNetworkRoad, duration, junctionCrossingAxes, junctionMovements, levels, levelTrips, levelStart, networkNodes, networkRoadGeometry, previewRamp, rampLaneTargets, separateNetworkJunction, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, validate, world } from "../model.mjs";
+import { configureJunctions, crossingDemandPreview, netconvertArgs, networkDemandPreview, rampDemandPreview, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
+import { harborCrossing } from "./fixtures/harbor-crossing.mjs";
 
 test("each level starts below an achievable goal with the same demand", async () => {
   const fixes = [
@@ -367,6 +368,106 @@ test("a stop sign halts a vehicle at the junction and allows it to continue", as
     const approach = trace.match(/<vehicle [^>]+lane="road-1-f_0"[^>]*>/g);
     assert.ok(approach.slice(-5).some(tag => Number(tag.match(/speed="([^"]+)"/)[1]) < .05));
     assert.match(await readFile(join(dir, "trips.xml"), "utf8"), /<tripinfo [^>]+arrival="\d+\.\d+"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Harbor's fixed demand follows the chosen SUMO lanes before and after adding ramps", async () => {
+  const design = JSON.parse(JSON.stringify(harborCrossing()));
+  assert.ok(validate(design));
+  const { network: original } = design;
+  const trips = levelTrips("short-merge");
+  const axes = junctionCrossingAxes(original, "j1").map(pair => pair.map(leg => leg.neighbor));
+  const affected = crossingDemandPreview(original, trips, "j1", axes);
+  assert.deepEqual(affected.movements.map(({ from, to, affected }) => [from, to, affected]),
+    [["west", "north", 62], ["south", "east", 11]]);
+  assert.equal(affected.affected, 73);
+  const separated = separateNetworkJunction(original, "j1", "north", 1);
+  assert.ok(separated.network, separated.issue);
+  assert.deepEqual(networkDemandPreview(separated.network, trips, original).movements
+    .map(({ from, to, scheduled, lost }) => [from, to, scheduled, lost]),
+  [["west", "north", 0, 62], ["west", "east", 21, 0], ["south", "north", 36, 0], ["south", "east", 0, 11]]);
+  const draw = (network, from, to, shape) => {
+    const target = ([x, y], end) => rampLaneTargets(network, { x, y }, end)[0];
+    const result = previewRamp(network, { start: target(from, "a"), end: target(to, "b"), shape });
+    assert.ok(result.network, result.issue);
+    return result;
+  };
+  const loop = draw(separated.network, [327.4655, 347.9792], [252.9928, 373.2367], "loop");
+  const direct = draw(loop.network, [265.8623, 348.9682], [378.2909, 368.9748], "direct");
+  assert.equal(networkDemandPreview(loop.network, trips, original).lost, 11);
+  assert.equal(networkDemandPreview(direct.network, trips, original).lost, 0);
+  const projected = rampDemandPreview(direct.network, trips, loop.rampId);
+  assert.equal(projected.scheduled, 62);
+  assert.equal(projected.weaves.length, 1);
+  assert.equal(projected.weaves[0].toRamp, direct.rampId);
+  assert.ok(projected.weaves[0].distance > 20 && projected.weaves[0].distance < 24);
+  assert.ok(projected.weaves[0].samples.length > 1);
+  const saved = JSON.parse(JSON.stringify({ ...design, network: direct.network }));
+  assert.ok(validate(saved));
+  assert.deepEqual(sumoRequest(saved, "short-merge").trips, trips);
+
+  const dir = await mkdtemp(join(tmpdir(), "traffic-harbor-ramps-"));
+  const command = (program, args) => {
+    const result = spawnSync(program, args, { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  const run = async network => {
+    const request = sumoRequest({ ...design, network }, "short-merge");
+    const files = sumoInputs(request, request.edited);
+    for (const [name, contents] of Object.entries(files)) await writeFile(join(dir, name), contents);
+    command("netconvert", netconvertArgs);
+    const file = join(dir, "corridor.net.xml");
+    const net = configureJunctions(await readFile(file, "utf8"), request.edited.design, request.signalCycle);
+    await writeFile(file, net);
+    command("sumo", sumoArgs(request));
+    const [trace, output, collisions] = await Promise.all(["trace.xml", "trips.xml", "collisions.xml"].map(name => readFile(join(dir, name), "utf8")));
+    const { results, frames } = sumoResult(request, request.edited, trace, output, collisions, net);
+    assert.equal(results.collisions, [...collisions.matchAll(/<collision\s/g)].length);
+    return { results, frames, net, routes: files["routes.xml"] };
+  };
+  try {
+    const bare = await run(separated.network);
+    assert.doesNotMatch(bare.net, /<junction id="j1"/);
+    assert.doesNotMatch(bare.routes, /id="(?:west-to-north|south-to-east)"/);
+    assert.equal(bare.results.finished, 57);
+    assert.equal(bare.results.unserved, 73);
+    assert.equal(bare.results.collisions, 0);
+    assert.ok(bare.frames.some(frame => frame.markers.some(marker => marker.grade === 1)));
+
+    const partial = await run(loop.network);
+    assert.equal(partial.results.unserved, 11);
+    assert.equal(partial.results.collisions, 0);
+    assert.ok(partial.results.ramps[0].completed > 0);
+    const roadIndices = loop.network.roads.flatMap((road, index) => road.rampId === loop.rampId ? [index] : []);
+    const lanes = roadIndices.map(index => `road-${index}-f_0`);
+    const trajectory = partial.frames.flatMap(frame => frame.markers.filter(marker => marker.id === 0 && marker.rampId === loop.rampId));
+    assert.deepEqual([...new Set(trajectory.map(marker => marker.lane))], lanes);
+    const angleDelta = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+    const sweep = trajectory.slice(1).reduce((total, marker, i) => total + angleDelta(trajectory[i].angle, marker.angle), 0);
+    assert.ok(sweep > Math.PI, `native path turned ${sweep * 180 / Math.PI}°`);
+    const nodes = networkNodes(loop.network);
+    const samples = roadIndices.flatMap(index => networkRoadGeometry(loop.network.roads[index], nodes).samples);
+    for (const marker of trajectory.slice(2, -2)) {
+      assert.ok(samples.some(point => Math.hypot(marker.x - point.x, marker.y - point.y) < 2), JSON.stringify(marker));
+    }
+    const firstRampEdge = `road-${roadIndices[0]}-f`;
+    const through = /id="west-to-east" edges="([^"]+)"/.exec(partial.routes)[1].split(" ");
+    const approach = through[1];
+    assert.match(partial.net, new RegExp(`<connection from="${approach}" to="${firstRampEdge}" fromLane="0" toLane="0"`));
+    assert.doesNotMatch(partial.net, new RegExp(`<connection from="${approach}" to="${firstRampEdge}" fromLane="1"`));
+    assert.match(partial.net, new RegExp(`<connection from="${approach}" to="${through[2]}" fromLane="0" toLane="0"`));
+    assert.match(partial.net, new RegExp(`<connection from="${approach}" to="${through[2]}" fromLane="1" toLane="1"`));
+    assert.ok(!through.includes(firstRampEdge));
+
+    const restored = await run(saved.network);
+    assert.equal(restored.results.unserved, 0);
+    assert.equal(restored.results.collisions, 0);
+    assert.deepEqual(restored.results.ramps.map(({ scheduled }) => scheduled), [62, 11]);
+    assert.ok(restored.results.ramps.every(ramp => ramp.completed > 0));
+    assert.equal(restored.results.weaves[0].id, projected.weaves[0].id);
+    assert.equal(restored.results.movements.reduce((sum, move) => sum + move.completed, 0), restored.results.finished);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
