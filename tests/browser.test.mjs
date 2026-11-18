@@ -990,11 +990,15 @@ test("build, compare, undo, and resume roundabouts and grade-separated roads on 
     await edit();
     await page.screenshot({ path: "test-results/cross-town-controls-320.png" });
     await button("Overpass from West to East").tap();
+    assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade).length, 0);
+    await tap("Apply");
     assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade === 1).length, 1);
     assert.equal(await map.locator('[data-road-level="1"] [data-pavement]').count(), 1);
     await tap("Undo");
     await edit();
     await button("Underpass from North to South").tap();
+    assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade).length, 0);
+    await tap("Apply");
     assert.equal((await save("cross-town-rush")).roads.filter(road => road.grade === -1).length, 1);
     await context.setOffline(true);
     await page.reload();
