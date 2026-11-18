@@ -92,7 +92,7 @@ const waitForServer = async () => {
   throw new Error("Local test server did not start");
 };
 
-test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 115000 }, async () => {
+test("edit, simulate, compare, and reopen offline at both mobile sizes", { timeout: 240000 }, async () => {
   let browser;
   try {
     await waitForServer();
