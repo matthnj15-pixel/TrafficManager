@@ -405,11 +405,11 @@ export function crossingDemandPreview(network, trips, nodeId, axes) {
   return { affected, movements };
 }
 
-export function rampDemandPreview(network, trips, rampId) {
+export function rampDemandPreview(network, demand, rampId) {
   const graph = freeNetworkGraph(network);
   let scheduled = 0;
   const movements = [];
-  for (const { from, to, trips, path } of demandRoutes(trips, graph).values()) {
+  for (const { from, to, trips, path } of demandRoutes(demand, graph).values()) {
     if (!rampId || !path?.some(edge => edge.road?.rampId === rampId)) continue;
     scheduled += trips.length;
     movements.push({ from, to, demand: trips.length, scheduled: trips.length });
