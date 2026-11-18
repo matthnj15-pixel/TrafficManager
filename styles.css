@@ -471,6 +471,7 @@ details summary::-webkit-details-marker { display: none; }
 [data-ramp-grade="1"] .ramp-surface { fill: #4d617f; stroke-width: 2.8; }
 [data-ramp-grade="-1"] .ramp-surface { fill: #655d79; stroke-dasharray: 4 3; }
 .segment-actions .widen-weave { min-height: 35px; background: #bcebdc; color: #143a41; }
+.segment-actions:has(.widen-weave) { gap: 2px; }
 .weave-controls { display: flex; align-items: center; gap: 7px; }
 .weave-controls p { font-size: .73rem; }
 .weave-layer path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; }
