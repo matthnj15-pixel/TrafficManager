@@ -419,10 +419,10 @@ details summary::-webkit-details-marker { display: none; }
 .crossing-axis[data-active="true"] span { color: #bcebdc; font-weight: 740; }
 .structure-layout button { min-height: 36px; padding: 0 3px; font-size: .76rem; }
 .structure-layout .structure-back { justify-self: start; padding-inline: 8px; }
-.crossing-impact { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 3px 8px; }
+.crossing-impact { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 7px; }
 .crossing-impact p { font-size: .72rem; }
 .crossing-impact details { position: relative; }
-.crossing-impact summary { min-height: 26px; font-size: .72rem; }
+.crossing-impact summary { height: 32px; width: auto; padding-inline: 7px; font-size: .72rem; white-space: nowrap; }
 .crossing-impact details div { position: absolute; z-index: 1; bottom: calc(100% + 5px); right: 0; width: max-content; max-width: 80vw;
   padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: #153640; }
 
@@ -435,7 +435,7 @@ details summary::-webkit-details-marker { display: none; }
 .ramp-shapes svg { width: 46px; height: 27px; }
 .ramp-grade button, .ramp-edit-tools button { min-width: 0; padding-inline: 3px; }
 .ramp-edit-tools button { white-space: normal; line-height: 1.1; }
-.ramp-picker { max-height: 130px; display: grid; gap: 4px; overflow: auto; overscroll-behavior: contain; }
+.ramp-picker { max-height: 141px; display: grid; gap: 4px; overflow: auto; overscroll-behavior: contain; }
 .ramp-picker button { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: normal; text-align: left; }
 .ramp-picker button svg { flex: none; }
 .ramp-picker button span { display: grid; padding: 3px 0; }
@@ -445,6 +445,9 @@ details summary::-webkit-details-marker { display: none; }
 .ramp-demand p:first-child { color: #d9eee3; font-weight: 650; }
 .ramp-lane-arrow { cursor: pointer; }
 .ramp-lane-arrow:focus-visible circle { fill: #246682; stroke: #ffd284; stroke-width: 1; }
+.ramp-arrow-outline, .ramp-arrow-line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.ramp-arrow-outline { stroke: #173d43; stroke-width: 2.6; }
+.ramp-arrow-line { stroke: #c3ffeb; stroke-width: 1.45; }
 .ramp-handle.draft-target:focus-visible circle:nth-child(2) { stroke: #ad701d; }
 .ramp-handle path { pointer-events: none; }
 .ramp-surface { fill: #247981; stroke: #f3f5db; stroke-width: 1.7; }
