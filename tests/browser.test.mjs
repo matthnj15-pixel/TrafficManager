@@ -564,7 +564,8 @@ test("the unified Road Builder supports touch edits and offline simulation", { t
     assert.equal(nx, 270);
     assert.ok(Math.abs(ny - 359) <= 3);
     await toolbar("Draw").click();
-    await page.getByLabel("Lane layout").selectOption("1:0");
+    await page.getByLabel("Lane layout", { exact: true }).click();
+    await page.getByRole("button", { name: "One-way", exact: true }).click();
     await click("Snap to grid");
     await click("Snap to angle");
     await page.screenshot({ path: "test-results/unified-draw.png" });
