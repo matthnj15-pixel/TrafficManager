@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { avenueSegments, baseline, buildNetworkRoundabout, connectNetworkRoad, duration, junctionCrossingAxes, junctionMovements, levels, levelTrips, levelStart, networkNodes, networkRoadGeometry, previewRamp, rampLaneTargets, separateNetworkJunction, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, validate, world } from "../model.mjs";
-import { configureJunctions, crossingDemandPreview, netconvertArgs, networkDemandPreview, rampDemandPreview, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
+import { avenueSegments, baseline, buildNetworkRoundabout, connectNetworkRoad, duration, junctionCrossingAxes, junctionMovements, levels, levelTrips, levelStart, maps, networkNodes, networkRoadGeometry, previewRamp, rampLaneTargets, separateNetworkJunction, shiftNetworkRoad, splitNetworkRoad, starterNetwork, step, validate, world } from "../model.mjs";
+import { configureJunctions, crossingDemandPreview, netconvertArgs, networkDemandPreview, networkWeaves, rampDemandPreview, signalOutputRequest, sumoArgs, sumoInputs, sumoResult } from "../sumo-network.mjs";
 import { readSumoComparison, sumoRequest } from "../sumo-export.mjs";
 import { harborCrossing } from "./fixtures/harbor-crossing.mjs";
 
@@ -467,8 +467,45 @@ test("Harbor's fixed demand follows the chosen SUMO lanes before and after addin
     assert.deepEqual(restored.results.ramps.map(({ scheduled }) => scheduled), [62, 11]);
     assert.ok(restored.results.ramps.every(ramp => ramp.completed > 0));
     assert.equal(restored.results.weaves[0].id, projected.weaves[0].id);
+    assert.equal(restored.results.weaves[0].short, true);
     assert.equal(restored.results.movements.reduce((sum, move) => sum + move.completed, 0), restored.results.finished);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("weaves follow the travel direction to the next exit over short and long distances", () => {
+  const map = "weave-distance-fixture";
+  const terminals = { west: [38, 280, -20], east: [462, 280, 20], north: [38, 430, -20], south: [462, 430, 20] };
+  maps[map] = { buildings: [], trees: [],
+    terminals: Object.fromEntries(Object.entries(terminals).map(([id, [x, y, dx]]) => [id, { id, x, y, dx, dy: 0 }])) };
+  const main = { a: "west", b: "east" }, local = { a: "north", b: "south" };
+  const network = { map, nodes: [], roads: [main, local].map(host => ({ ...host, forward: 2, backward: 2, bend: 0 })) };
+  const lane = (host, t, lane) => ({ host, t, lane, forward: true });
+  const connect = (network, start, end) => {
+    const result = previewRamp(network, { start, end, shape: "direct" });
+    assert.ok(result.network, result.issue);
+    return result;
+  };
+  try {
+    const merge = connect(network, lane(local, .07, 0), lane(main, .26, 0));
+    const long = connect(merge.network, lane(main, .65, 1), lane(local, .89, 0));
+    const check = (network, exit, distance, short) => {
+      const weaves = networkWeaves(network).filter(weave => weave.fromRamp === merge.rampId);
+      assert.equal(weaves.length, 1);
+      const [weave] = weaves;
+      assert.equal(weave.toRamp, exit.rampId);
+      assert.ok(Math.abs(weave.distance - distance) < .001);
+      assert.equal(weave.short, short);
+      assert.equal(weave.fromLane, 0);
+      assert.equal(weave.toLane, 1);
+      assert.ok(weave.hostLanes.every(host => host.forward));
+      assert.ok(weave.samples[0].x < weave.samples.at(-1).x);
+    };
+    check(long.network, long, 132.288, false);
+    const near = connect(long.network, lane(main, .32, 1), lane(local, .54, 0));
+    check(near.network, near, 20.352, true);
+  } finally {
+    delete maps[map];
   }
 });

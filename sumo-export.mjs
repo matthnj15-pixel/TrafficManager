@@ -62,7 +62,8 @@ export function readSumoComparison(data, design, levelId) {
     [row.scheduled, row.entered, row.completed].every(count) && row.completed <= row.entered && row.entered <= row.scheduled &&
     Array.isArray(row.lanes) && row.lanes.every(lane => peak(lane) && typeof lane.lane === "string"));
   const validWeaves = rows => Array.isArray(rows) && rows.every(row => peakLane(row) &&
-    [row.id, row.fromRamp, row.toRamp].every(value => typeof value === "string") && nonnegative(row.distance));
+    [row.id, row.fromRamp, row.toRamp].every(value => typeof value === "string") && nonnegative(row.distance) &&
+    (row.short === undefined || typeof row.short === "boolean"));
   const validMarker = marker => marker && Number.isInteger(marker.id) && marker.id >= 0 &&
     ["car", "bus", "pickup"].includes(marker.kind) && [marker.x, marker.y, marker.angle].every(Number.isFinite) &&
     (marker.grade === undefined || [-1, 1].includes(marker.grade)) &&

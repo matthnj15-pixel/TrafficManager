@@ -1,4 +1,4 @@
-import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneAnchoredCurve, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodeElevation, networkNodes, networkRoadGeometry, networkTerminals, roadElevationProfile, roadGrade, roundaboutLoops, selectedLane, trafficShapeSamples, tripTerminals } from "./model.mjs";
+import { avenueLanePath, avenueLaneX, avenuePieces, isLaneDrop, junctionLegs, junctionMovements, laneAnchoredCurve, laneDropTaper, movementKey, networkLaneSamples, networkLaneWidth, networkMergeSamples, networkNodeElevation, networkNodes, networkRoadGeometry, networkTerminals, roadElevationProfile, roadGrade, roundaboutLoops, scale, selectedLane, trafficShapeSamples, tripTerminals } from "./model.mjs";
 
 // Shared School Pickup network for browser and native SUMO.
 // Inputs are generated internally by sumoRequest.
@@ -424,43 +424,59 @@ export function networkWeaves(network) {
 
 function findNetworkWeaves(network, { edges, transitions, nodes }) {
   const shortWeaveDistance = 80;
-  const weaves = new Map();
-  const hostRoad = edge => edge.road && !edge.road.rampId && !edge.road.laneA && !edge.road.laneB;
+  const weaves = [];
+  const lanePaths = new Map();
+  const hostRoad = edge => edge.road && !edge.road.rampId && !edge.road.laneA && !edge.road.laneB && !edge.road.roundabout;
   const heading = (edge, start) => {
     const { samples } = edge.geometry;
     return (start === edge.forward ? samples[0] : samples.at(-1)).angle + (edge.forward ? 0 : Math.PI);
   };
+  const lanePath = (edge, lane) => {
+    const key = `${edge.id}_${lane}`;
+    if (!lanePaths.has(key)) {
+      const points = networkLaneSamples(edge.road, network, nodes, edge.forward, lane, edge.geometry);
+      const distance = points.slice(1).reduce((sum, p, i) =>
+        sum + Math.hypot(p.x - points[i].x, p.y - points[i].y), 0) * scale;
+      lanePaths.set(key, { key, edge, lane, distance, samples: trafficShapeSamples(points) });
+    }
+    return lanePaths.get(key);
+  };
   for (const ramp of edges) {
     if (!ramp.road?.rampId || !ramp.road.laneB || !ramp.forward) continue;
     const fromRamp = ramp.road.rampId;
-    const pending = (transitions.get(ramp.id) ?? []).filter(link => hostRoad(link.to)).map(link => ({
-      edge: link.to, lane: link.toLane, distance: link.to.length, path: []
-    }));
+    const pending = [];
+    const continueAlong = ({ to, toLane }, path, distance) => {
+      const segment = lanePath(to, toLane);
+      pending.push({ segment, distance: distance + segment.distance, path: [...path, segment] });
+    };
+    for (const link of transitions.get(ramp.id) ?? []) {
+      if (hostRoad(link.to)) continueAlong(link, [], 0);
+    }
     const visited = new Set();
     while (pending.length) {
       pending.sort((a, b) => b.distance - a.distance);
-      const { edge, lane, distance, path } = pending.pop();
-      const key = `${edge.id}_${lane}`;
-      if (distance > shortWeaveDistance || visited.has(key)) continue;
+      const { segment: { edge, lane, key }, distance, path } = pending.pop();
+      if (visited.has(key)) continue;
       visited.add(key);
-      const host = [...path, { edge, lane }];
-      for (const link of transitions.get(edge.id) ?? []) {
-        const toRamp = link.to.road?.rampId;
-        if (toRamp && fromRamp !== toRamp && link.to.road.laneA) {
-          const id = `${fromRamp}-${toRamp}`;
-          if (weaves.has(id) && weaves.get(id).distance <= distance) continue;
-          weaves.set(id, { id, fromRamp, toRamp, distance, fromLane: host[0].lane, toLane: link.fromLane,
-            roadIndices: host.map(({ edge }) => edge.index),
-            hostLanes: host.map(({ edge, lane }) => ({ roadIndex: edge.index, forward: edge.forward, lane })),
-            samples: host.flatMap(({ edge, lane }) => trafficShapeSamples(networkLaneSamples(
-              edge.road, network, nodes, edge.forward, lane, edge.geometry))) });
-        } else if (hostRoad(link.to) && link.fromLane === lane && Math.cos(heading(edge, false) - heading(link.to, true)) >= .72) {
-          pending.push({ edge: link.to, lane: link.toLane, distance: distance + link.to.length, path: host });
+      const links = transitions.get(edge.id) ?? [];
+      const exit = links.find(({ to }) => to.road?.rampId && to.road.rampId !== fromRamp && to.road.laneA);
+      if (exit) {
+        const toRamp = exit.to.road.rampId;
+        weaves.push({ id: `${fromRamp}-${toRamp}`, fromRamp, toRamp, distance, short: distance <= shortWeaveDistance,
+          fromLane: path[0].lane, toLane: exit.fromLane,
+          roadIndices: path.map(({ edge }) => edge.index),
+          hostLanes: path.map(({ edge, lane }) => ({ roadIndex: edge.index, forward: edge.forward, lane })),
+          samples: path.flatMap(({ samples }) => samples) });
+        break;
+      }
+      for (const link of links) {
+        if (hostRoad(link.to) && link.fromLane === lane && Math.cos(heading(edge, false) - heading(link.to, true)) >= .72) {
+          continueAlong(link, path, distance);
         }
       }
     }
   }
-  return [...weaves.values()];
+  return weaves;
 }
 
 function freeNetworkInputs(request, network) {
@@ -812,8 +828,8 @@ export function sumoResult(request, layout, trace, trips, collisions, network, s
   const rampResults = [...ramps.values()].map(({ id, from, to, scheduled, trips, lanes }) =>
     ({ id, from, to, scheduled, entered: trips.size, completed: [...trips].filter(completed).length, ...lanePeak(lanes),
       lanes: [...lanes].map(lane => laneReports.get(lane) ?? { lane, peakQueue: 0, peakFrame: 0 }) }));
-  const weaveResults = weaves.map(({ id, fromRamp, toRamp, distance, hostLanes }) =>
-    ({ id, fromRamp, toRamp, distance, ...lanePeak(hostLanes.map(({ roadIndex, forward, lane }) =>
+  const weaveResults = weaves.map(({ id, fromRamp, toRamp, distance, short, hostLanes }) =>
+    ({ id, fromRamp, toRamp, distance, short, ...lanePeak(hostLanes.map(({ roadIndex, forward, lane }) =>
       `road-${roadIndex}-${forward ? "f" : "b"}_${lane}`)) }));
   return { design: layout.design, frames, signals: signalReplay(network, signalOutput, request.scale), results: { finished, waiting: request.trips.length - finished,
     longestQueue, peakFrame, busDelay, crossDelay, northFinished,
