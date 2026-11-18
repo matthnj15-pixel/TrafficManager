@@ -102,3 +102,24 @@ test("the loop can serve either left movement at a three-leg trumpet", () => {
     }
   }
 });
+
+test("in-road departures preserve the through lane on T and shallow Y branches", () => {
+  for (const shallow of [false, true]) {
+    let network = site();
+    if (shallow) {
+      Object.assign(maps[map].terminals.south, { x: 462, y: 450, dx: 20, dy: 7 });
+    }
+    network = { ...network, nodes: [{ id: "j10", x: 250, y: 405, control: "priority" }],
+      roads: [network.roads[0], { a: "j10", b: "south", forward: 1, backward: 0, bend: 0 }] };
+    const source = lane(0, .36);
+    const receiving = { host: { a: "j10", b: "south" }, forward: true, t: .35, lane: 0 };
+    const result = apply(network, source, receiving, "direct");
+    const cut = result.roads.find(road => road.rampId && road.laneA);
+    const host = result.roads.filter(road => road.rampHost?.source.a === "west");
+    assert.equal(host.length, 2);
+    assert.ok(host.every(road => road.forward === 2 && road.backward === 2));
+    assert.ok(host.every(road => [road.a, road.b].includes(cut.a)));
+    assert.match(routeXml(result, "west", "east"), /<vehicle /);
+    assert.match(routeXml(result, "west", "south"), new RegExp("road-" + result.roads.indexOf(cut) + "-f"));
+  }
+});
